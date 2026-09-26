@@ -1,16 +1,28 @@
+<div align="center">
+
 # pi-warden
 
-**Stop babysitting your coding agent.**
+**Your coding agent says "done". It didn't run the tests.**<br>
+**pi-warden catches it, and the agent fixes it without you.**
 
-pi-warden supervises Pi while it works, catching risky actions, ignored rules, stuck loops, unverified "done" claims, security issues, runaway output, wasted context, and more.
+[![npm](https://img.shields.io/npm/v/pi-warden?color=cb3837&logo=npm)](https://www.npmjs.com/package/pi-warden)
+[![downloads](https://img.shields.io/npm/dm/pi-warden?color=blue)](https://www.npmjs.com/package/pi-warden)
+[![stars](https://img.shields.io/github/stars/DevMortimer/pi-warden?style=flat&logo=github)](https://github.com/DevMortimer/pi-warden/stargazers)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Pi](https://img.shields.io/badge/Pi-0.85%2B-8a2be2)](https://github.com/earendil-works/pi)
+[![judged by Jev](https://img.shields.io/badge/judged%20by-Jev-orange)](https://typesafe.ai)
 
-Instead of interrupting you for every problem, Warden usually feeds the issue back to the agent so it can correct itself and keep going.
-
-**In nine days of real use: 743 sessions, 193 risky actions held before they ran, 1,292 notes sent to the agent. After a "done" with no test behind it, the agent ran one 78% of the time.**
+</div>
 
 ![pi-warden tells the agent what it got wrong and the agent fixes it: 65 untested "done" claims, 51 then ran the tests, 5 found a failure it had missed; after a hold the agent found a safer way 33 times](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/hero.png)
 
-<sub>Numbers from the first nine days of real use (2026-09-16 to 2026-09-24, 743 sessions). The quoted lines are verbatim. Counted with `scripts/field-usage.mjs`; the [field report](eval/reports/2026-09-24-field-usage/) has the method and what was noise.</sub>
+<div align="center">
+
+**743 sessions · 193 risky actions stopped before they ran · 78% of fake "done"s turned into real test runs**
+
+<sub>Nine days of real use, 2026-09-16 to 2026-09-24. Method and noise: [field report](eval/reports/2026-09-24-field-usage/).</sub>
+
+</div>
 
 ## Install
 
@@ -18,116 +30,59 @@ Instead of interrupting you for every problem, Warden usually feeds the issue ba
 pi install npm:pi-warden
 ```
 
-1. `/warden enable` to turn judgments on. Paste a key from [console.typesafe.ai](https://console.typesafe.ai) (hidden input, saved owner-only), or skip for offline-only mode.
-2. `/warden init` to write a starter `pi-warden.md`. The rules guard enforces what you put there.
-3. `/warden index` (recommended) so the conscience knows your skills and tools from their real descriptions.
-4. `/warden test` to see one synthetic verdict, then work as usual. The status line shows verdicts; `ctrl+shift+w` opens the trace sidebar.
+Then `/warden enable` (paste a [TypeSafe](https://console.typesafe.ai) key) and `/warden init` (writes a starter `pi-warden.md`). That's it. No key? The offline guards still run.
 
-The conscience is beta and off by default. Turn it on with `conscience.enabled: true` in the user config.
+## It steers. It doesn't nag.
 
-Works without any key (offline guards: pattern list, runaway stop, sensitive-path notes, credential warnings). Requires Pi 0.85+, Node 22.19+.
+Most guardrails stop and ask you. pi-warden tells **the agent** what it got wrong, and the agent corrects itself. You are pulled in only when something can't be undone: **3 holds per 1,000 calls. The other 997 just run.**
 
-## What Warden catches
+| Your agent… | pi-warden… |
+| --- | --- |
+| says "done" with no test, build, or lint behind it | sends it back to prove it |
+| breaks a rule in your `pi-warden.md` or `AGENTS.md` | quotes the exact rule it broke |
+| is about to `git push --force`, `reset --hard`, `rm -rf`, `DROP` | holds it before it runs |
+| retries the same failing fix for the third time | asks for a new hypothesis |
+| writes stubs, restating comments, hardcoded secrets | names them on the spot |
+| floods its context with a 40k-line log | keeps the lines that matter, stores the rest |
+| starts repeating itself forever | stops the reply |
 
-| Guard | Watches | Does |
-| --- | --- | --- |
-| **Action** | `bash`, `write`, `edit` before run | Holds irreversible calls, records trace-only off-task findings |
-| **Rules** | every `write` and `edit` | Judges against project Markdown rules, quotes the broken rule |
-| **Slop** | code and replies | Names stubs, restating comments, dead code, hedging |
-| **Stuck** | tool results | Repeated failures using the same strategy |
-| **Done-check** | final message | "Done" claims with no test/build/lint behind them, or UI changes nobody looked at |
-| **Security** | code and output | Hardcoded secrets, injection risks |
-| **Runaway** | reply stream | Stops replies that begin repeating themselves |
-| **Subagent triage** | async child reports | Keeps noisy background work from waking the parent |
-| **Call waste** | tool results, and the prompt once per session | Names repeated page reads, repeated searches of one file, filtered check re-runs, and `sleep` polling; one session tip |
-| **Conscience** (beta, off) | each operator prompt | Recommends a skill or tool from the capability index before the agent acts; enable with `conscience.enabled: true` |
+[Every guard, with its thresholds and calibration →](docs/guards.md)
 
-## How intervention works
-
-![Real verdicts from pi-warden: the same command gets a different verdict depending on what the user asked for](https://raw.githubusercontent.com/DevMortimer/pi-warden/main/docs/preview.png)
-
-1. **Read-only? Skip.** `git status`, `ls`, `read` means no request and no trace entry.
-2. **Known-dangerous pattern? Catch it locally.** Force push, `git reset --hard`, recursive `rm`, SQL `DROP` held instantly. An agent deleting temp-directory scratch it created in the same session is not held (macOS and Windows).
-3. **Needs judgment?** Warden evaluates the action in context.
-4. **Steer or hold.** Most issues go back to the agent so it can correct itself. Irreversible actions can be stopped before they run.
-
-In the default `steer` mode, Warden talks to the agent rather than interrupting you. `confirm` asks you directly; `advise` never blocks.
-
-## More than guardrails
-
-- **Learns from holds**, tracking outcomes and recommending policy changes via `/warden recommend`.
-- **Custom policies**: command, path, and arming rules for your own workflow.
-- **Context saver** trims oversized tool output while keeping the full result retrievable.
-- **Multiple judgment backends**: TypeSafe by default, with OpenRouter support.
-- **Honest about being off**: when judgments cannot run (no consent, no key, a rejected key, budget spent) Warden says so once, with the fix. A failing backend is paused after repeated errors instead of costing a timeout per action.
-- **Full traceability**: inspect what Warden saw, decided, and told the agent.
-- **Desktop alerts** for events that need you.
-
-## Custom rules
-
-Put `pi-warden.md` at the project root. Each heading is one rule:
+## Rules no linter can check
 
 ```markdown
-# No console statements
-Code must not contain `console.log` or `console.debug`. Use the logger.
+# A TODO names a ticket
+A bare `TODO` or `FIXME` without a ticket reference is a violation.
 
-# Exported functions must have explicit return types
-paths: src/**/*.ts
-Every exported function declares its return type.
+# Errors never reach the user raw
+paths: src/api/**/*.ts
+Catch errors at the handler and return a message a user can act on.
 ```
 
-Jev judges every write and quotes violations back. Rules can be things no linter checks: "a TODO must name a ticket", "comments must not restate the code". Without `pi-warden.md`, the first of `AGENTS.md`/`CLAUDE.md`/`README.md` is judged instead. [Examples and config details.](docs/configuration.md)
+Each `#` heading is one rule. Every write and edit is judged against it in about a quarter of a second by [Jev](https://typesafe.ai), a model that returns a probability, not prose. No `pi-warden.md`? Your `AGENTS.md`, `CLAUDE.md`, or `README.md` is used instead.
 
-## Does it actually help?
+## Receipts
 
-### In daily use
+- **Rules:** in 150 paired agent runs, the agent without pi-warden broke the tested rule **6 times**. With it: **0**.
+- **Done-check:** after a nudge, the agent ran a check **74–78%** of the time, and sometimes found a failure it had missed.
+- **Holds:** when the agent was stopped, it found a safer way **33 of 44** times.
+- **Stability:** 13,952 guard cases over 109 overnight cycles, no score drift.
 
-Four days of the maintainer's own work, 397 sessions ([report](eval/reports/2026-09-24-field-usage/), [raw numbers](eval/reports/2026-09-24-field-usage/usage.json), `scripts/field-usage.mjs` to run it on your own logs):
-
-- **Done-check:** 47 nudges; in 35 the agent then ran a test or build.
-- **Holds:** 143 of 19,695 actions. Of the 44 with a recorded outcome, the agent took a safer route 33 times.
-- **Rules:** 195 corrections naming a project rule, including a process wait with no timeout and a home path in a public test fixture.
-- **Context:** about 123,000 tokens of oversized output trimmed in the traced sessions, and no agent needed the full output back.
-
-The report also lists what was noise that week (scratch deletes, credential notices on source code, two over-broad rules) and what changed because of it.
-
-### In benchmarks
-
-In 150 paired agent runs, the control setup violated the tested project rule **6 times**. With Warden: **0**.
-
-An overnight stability run covered **13,952 guard cases across 109 cycles** with no score drift.
-
-These are project-maintained benchmarks, not universal claims. Raw reports and reproducible eval tooling are in the repo.
-
-### Does it get in the way? Measured, not promised.
-
-**3 holds per 1,000 calls. The other 997 run.** Across 315 recorded sessions and 18,075 guarded calls, the action hold fired 48 times, each for an action that is hard to undo. On the maintainer's machine, 452 allowed calls have run since outcome tracking began and not one was regretted afterward. When a hold was wrong, one retry cleared it: 2 of 13 labeled holds stood, the other 11 cleared on retry. The 27 calls the maintainer later regretted in the replay were ordinary edits and commits, not the kind a pre-call hold can see coming; those belong to the rules guard, the done-check, and the regret label, which are measured too. Snapshot numbers: `scripts/hold-stats.mjs` refreshes them, and the full replay is in [`eval/reports/2026-09-21-calibration-0.33.3/`](eval/reports/2026-09-21-calibration-0.33.3/).
-
-[See the evals ->](eval/reports/)
+Every number has a script and a raw report in [`eval/reports/`](eval/reports/). They are the maintainer's measurements, not a universal promise, and the reports list what was noise.
 
 ## Privacy
 
-Depending on the configured judgment backend, Warden sends to your provider: a redacted summary of each guarded call, the agent's plan, up to eight redacted prior messages, the task spine (your first request in the thread and up to four earlier ones, capped at 1,200 characters), and redacted tool-output samples. Secrets are stripped before anything leaves the machine. [Full details.](docs/data-handling.md) Security work — pentesting, incident response, CTF — has its own configuration recipe for keeping samples local and for the friction that credentials and lab setups cause: [Recipe: security work](docs/configuration.md#recipe-security-work).
+Secrets and unshown paths are stripped before anything leaves your machine. [Exactly what is sent →](docs/data-handling.md)
 
-## Documentation
+## Docs
 
-- [docs/guards.md](docs/guards.md): every guard, thresholds, calibration, Jev questions
-- [docs/configuration.md](docs/configuration.md): all config keys, defaults, status line templates
-- [docs/commands.md](docs/commands.md): command reference
-- [docs/faq.md](docs/faq.md): cost, permissions, headless CI, project overrides
-- [docs/data-handling.md](docs/data-handling.md): what leaves the machine, what stays
-- [docs/examples.md](docs/examples.md): real session examples
-- [examples/](examples/): starter rules file, both config files
+[Guards](docs/guards.md) · [Configuration](docs/configuration.md) · [Commands](docs/commands.md) · [FAQ](docs/faq.md) · [Data handling](docs/data-handling.md) · [Examples](docs/examples.md)
 
 ## Development
 
 ```bash
 npm install
-npm run check          # typecheck + offline tests + build
-npm run test:live      # live tests (costs real judgments)
-npm run eval:ab        # A/B benchmark (costs real tokens)
+npm run check        # typecheck + offline tests + build
 ```
 
-## License
-
-MIT
+MIT licensed.

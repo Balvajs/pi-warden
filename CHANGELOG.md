@@ -6,7 +6,9 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Docs
+
+- README rewritten shorter: badges, one headline claim, a table of what the agent does and what pi-warden does, and the measured numbers in one list.
 
 ## 0.68.0
 
