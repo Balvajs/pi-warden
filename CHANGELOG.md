@@ -6,6 +6,10 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
+<!-- Empty. Next release starts here. -->
+
+## 0.73.0
+
 ### Fixed
 
 - pi-warden runs on oh-my-pi and other hosts that load Pi extensions through a compatibility layer. `src/host-compat.ts` maps the host API onto the Pi contract: `before_agent_start` gets `systemPromptOptions` with the active skills, and an `appendSystemPrompt` becomes the host's `systemPrompt` array. An input the extension handles is also marked `handled`. `agent_settled` runs after pi-warden's `agent_end` handlers have been dispatched and the host becomes idle. If background work is cancelled without another `agent_end`, the adapter waits for that work to drain. Command contexts get `getSystemPromptOptions()`. On upstream Pi the API is not changed.
