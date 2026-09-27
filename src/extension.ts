@@ -13,6 +13,7 @@ import { ensureApiKey } from "pi-typesafe/ui";
 import { backendHost, disclosureFor, judgeOptions, keyEnvFor, loginStoresKey, resolveBackend } from "./backend.js";
 import type { JudgmentBackend, JudgmentsOffReason } from "./backend.js";
 import { ActionGuard } from "./action-guard.js";
+import { adaptHost } from "./host-compat.js";
 import { assistantView, formatMuted, NEVER_MUTED, STEER_KINDS, SteerStats, SteerWatch } from "./adaptive.js";
 import type { SteerKind, SteerSubject } from "./adaptive.js";
 import type { ToolCallRef } from "./action-guard.js";
@@ -318,7 +319,8 @@ export function _testSetIndexRunning(running: boolean, paths: string[] = []): vo
   indexWritePaths = paths;
 }
 
-export default function wardenExtension(pi: ExtensionAPI): void {
+export default function wardenExtension(host: ExtensionAPI): void {
+  const pi = adaptHost(host);
   // The beta policy is held in this closure and passed to the activation gate on every delivery
   // check; there is no module state. A question-wording change breaks the hash test and the gate
   // fail-closes (no delivery) until the policy is re-measured.

@@ -1,9 +1,9 @@
 // src/learning.ts - Smart hold learning system
 // Records full context with each hold and predicts outcomes using history.
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createHash } from "crypto";
 import { mkdirSync } from "fs";
-import { homedir } from "os";
 import { dirname, join } from "path";
 import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
@@ -51,7 +51,7 @@ async function getDb(): Promise<import("node:sqlite").DatabaseSync> {
   try {
     const { DatabaseSync } = await import("node:sqlite");
     sqliteAvailable = true;
-    const dbPath = process.env.PI_WARDEN_DB ?? join(homedir(), ".pi", "agent", "pi-warden", "holds.db");
+    const dbPath = process.env.PI_WARDEN_DB ?? join(getAgentDir(), "pi-warden", "holds.db");
     // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
     mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     db = new DatabaseSync(dbPath);

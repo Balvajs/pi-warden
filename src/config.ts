@@ -1,3 +1,4 @@
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -539,12 +540,12 @@ export function userConfigPath(): string {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
   const agentDir = configured
     ? (configured === "~" || configured.startsWith("~/") ? join(homedir(), configured.slice(1)) : configured)
-    : join(homedir(), ".pi", "agent");
+    : getAgentDir();
   return join(agentDir, PACKAGE_NAME, "config.json");
 }
 
 export function projectConfigPath(cwd: string): string {
-  return join(cwd, ".pi", PROJECT_CONFIG_FILE);
+  return join(cwd, CONFIG_DIR_NAME, PROJECT_CONFIG_FILE);
 }
 
 type Json = Record<string, unknown>;

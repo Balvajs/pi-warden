@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import type { Skill } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type Skill } from "@earendil-works/pi-coding-agent";
 import { sanitizeDescription } from "./conscience.js";
 import type { CapabilityRole } from "./conscience.js";
 import { fileContentHash, toolSourceHash } from "./hashing.js";
@@ -58,7 +58,7 @@ function resolveAgentDir(env: NodeJS.ProcessEnv = process.env): string {
       : configured;
     return expanded;
   }
-  return join(homedir(), ".pi", "agent");
+  return getAgentDir();
 }
 
 /** The directory `/warden index` asks the agent to write its index files into. */
