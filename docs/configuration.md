@@ -6,6 +6,8 @@ Contents: [User config](#user-config) · [Project config](#project-config) · [R
 
 ## User config
 
+Paths in this document are for Pi. On oh-my-pi, `~/.pi/agent` is `~/.omp/agent` and the project file is `.omp/pi-warden.json`. `PI_CODING_AGENT_DIR` sets the agent directory on both hosts.
+
 User file `~/.pi/agent/pi-warden/config.json` (owner-only). `/warden config` opens the panel that edits it (`s` saves, `/warden config` again or `q` closes); `/warden config get <key>` prints one value without the panel. Missing keys use these defaults:
 
 ```json

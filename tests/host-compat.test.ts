@@ -15,8 +15,13 @@ function fakeHost(extras: Record<string, unknown> = {}) {
     registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => unknown }) { commands.set(name, options); },
   };
   const emit = async (event: string, payload: unknown, ctx: unknown = {}) => {
+    await Promise.resolve(); // omp finishes extension setup before dispatching an event.
     let result: unknown;
-    for (const handler of handlers.get(event) ?? []) result = await handler(payload, ctx);
+    let error: unknown;
+    for (const handler of handlers.get(event) ?? []) {
+      try { result = await handler(payload, ctx); } catch (failure) { error ??= failure; }
+    }
+    if (error !== undefined) throw error;
     return result;
   };
   return { api: api as unknown as ExtensionAPI, handlers, commands, emit };
@@ -57,6 +62,25 @@ test("adaptHost: appendSystemPrompt set by the handler becomes the host's system
   assert.equal(await quiet.emit("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: ["base"] }), undefined, "no tip leaves the prompt alone");
 });
 
+test("adaptHost: the systemPrompt from appendSystemPrompt keeps the rest of the handler result", async () => {
+  const message = { customType: "conscience", content: "use the skill", display: false };
+  const host = skillHost();
+  adaptHost(host.api).on("before_agent_start", (event: { systemPromptOptions?: { appendSystemPrompt?: string } }) => {
+    event.systemPromptOptions!.appendSystemPrompt = "tip";
+    return { message };
+  });
+  const result = await host.emit("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: ["base"] });
+  assert.deepEqual(result, { message, systemPrompt: ["base", "tip"] }, "the message is kept and the tip appended to the host prompt");
+
+  const single = skillHost();
+  adaptHost(single.api).on("before_agent_start", (event: { systemPromptOptions?: { appendSystemPrompt?: string } }) => {
+    event.systemPromptOptions!.appendSystemPrompt = "tip";
+    return { systemPrompt: "solo" };
+  });
+  const wrapped = await single.emit("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: ["base"] });
+  assert.deepEqual(wrapped, { systemPrompt: ["solo", "tip"] }, "the handler's own prompt wins over the event's");
+});
+
 test("adaptHost: an input handled by the extension is also marked handled for the host", async () => {
   const host = skillHost();
   const adapted = adaptHost(host.api);
@@ -65,16 +89,199 @@ test("adaptHost: an input handled by the extension is also marked handled for th
   assert.deepEqual(await host.emit("input", { text: "go" }), { action: "continue" }, "continue is not marked handled");
 });
 
-test("adaptHost: agent_settled handlers run after every agent_end handler has finished", async () => {
+test("adaptHost: agent_settled waits for both agent_end handlers, including delayed I/O", async () => {
   const host = skillHost();
   const adapted = adaptHost(host.api);
   const order: string[] = [];
   adapted.on("agent_settled", () => { order.push("settled"); });
-  adapted.on("agent_end", async () => { await Promise.resolve(); order.push("end"); });
-  assert.equal(host.handlers.has("agent_settled"), false, "the host never emits agent_settled, so nothing waits on it");
-  await host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
+  adapted.on("agent_end", () => { order.push("first"); });
+  let finishIo = (): void => {};
+  const io = new Promise<void>(resolve => { finishIo = resolve; });
+  adapted.on("agent_end", async () => { await io; order.push("second"); });
+  const ended = host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ["first"], "no settle while second agent_end handler waits for I/O");
+  finishIo();
+  await ended;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ["first", "second", "settled"]);
+});
+
+test("adaptHost: agent_settled runs after an agent_end registered first", async () => {
+  const host = skillHost();
+  const adapted = adaptHost(host.api);
+  const order: string[] = [];
+  let finishIo = (): void => {};
+  const io = new Promise<void>(resolve => { finishIo = resolve; });
+  adapted.on("agent_end", async () => { await io; order.push("end"); });
+  adapted.on("agent_settled", () => { order.push("settled"); });
+  const ended = host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, []);
+  finishIo();
+  await ended;
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(order, ["end", "settled"]);
+});
+
+test("adaptHost: an agent_end that says the host will continue does not settle; queued messages alone do not stop the settle", async () => {
+  const host = skillHost();
+  let settled = 0;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, { isIdle: () => true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0);
+  // omp keeps a nextTurn message queued while idle until the next user prompt, so no continuation follows.
+  await host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true, hasPendingMessages: () => true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
+});
+
+test("adaptHost: cancelled async work settles after draining without another agent_end", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    let settled = 0;
+    let running = true;
+    adaptHost(host.api).on("agent_settled", () => { settled++; });
+    const ctx = {
+      isIdle: () => true,
+      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+    };
+    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    context.mock.timers.tick(500);
+    assert.equal(settled, 0, "running work delays settle");
+    running = false; // Cancelled or acknowledged job sends no follow-up and no terminal agent_end.
+    context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
+});
+
+test("adaptHost: cancellation during an earlier agent_end handler still settles", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    const adapted = adaptHost(host.api);
+    let settled = 0;
+    let running = true;
+    let finishIo = (): void => {};
+    const io = new Promise<void>(resolve => { finishIo = resolve; });
+    adapted.on("agent_settled", () => { settled++; });
+    adapted.on("agent_end", () => io);
+    const ctx = {
+      isIdle: () => true,
+      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+    };
+    const ended = host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    running = false;
+    finishIo();
+    await ended;
+    context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
+});
+
+test("adaptHost: cancellation in an earlier extension can drain before warden sees agent_end", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    let running = true;
+    let settled = 0;
+    host.handlers.set("agent_end", [() => { running = false; }]); // Earlier extension in omp's dispatch order.
+    adaptHost(host.api).on("agent_settled", () => { settled++; });
+    const ctx = {
+      isIdle: () => true,
+      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+    };
+    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    context.mock.timers.tick(1000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
+});
+
+test("adaptHost: empty async snapshot does not settle a continuation that starts during grace period", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    let settled = 0;
+    let idle = true;
+    adaptHost(host.api).on("agent_settled", () => { settled++; });
+    const ctx = {
+      isIdle: () => idle,
+      getAsyncJobSnapshot: () => ({ running: [], delivery: { queued: 0, delivering: false } }),
+    };
+    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    idle = false;
+    context.mock.timers.tick(1000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 0);
+    idle = true;
+    await host.emit("agent_end", { type: "agent_end" }, ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
+});
+
+test("adaptHost: queued and delivering async results delay settlement", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    let settled = 0;
+    let queued = 1;
+    let delivering = false;
+    adaptHost(host.api).on("agent_settled", () => { settled++; });
+    const ctx = {
+      isIdle: () => true,
+      getAsyncJobSnapshot: () => ({ running: [], delivery: { queued, delivering } }),
+    };
+    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    context.mock.timers.tick(500);
+    assert.equal(settled, 0);
+    queued = 0;
+    delivering = true;
+    context.mock.timers.tick(500);
+    assert.equal(settled, 0);
+    delivering = false;
+    context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
+});
+
+test("adaptHost: async work watcher does not settle after a later agent_end", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const host = skillHost();
+    let settled = 0;
+    let running = true;
+    adaptHost(host.api).on("agent_settled", () => { settled++; });
+    const ctx = {
+      isIdle: () => true,
+      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+    };
+    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+    running = false;
+    await host.emit("agent_end", { type: "agent_end" }, ctx);
+    context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, 1);
+  } finally {
+    context.mock.timers.reset();
+  }
 });
 
 test("adaptHost: an agent_end followed by a continuation does not settle; the run that ends idle does", async () => {
@@ -87,6 +294,75 @@ test("adaptHost: an agent_end followed by a continuation does not settle; the ru
   await host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(settled, 1);
+});
+
+test("adaptHost: the host is checked for idle after agent_end returns, not while its handlers run", async () => {
+  const host = skillHost();
+  let settled = 0;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  let idle = false;
+  await host.emit("agent_end", { type: "agent_end" }, { isIdle: () => idle });
+  idle = true; // omp's prompt is still in flight while agent_end handlers run and ends after they return.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
+});
+
+test("adaptHost: a continuation starting before the deferred idle check suppresses settle", async () => {
+  const host = skillHost();
+  let settled = 0;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  let idle = true;
+  const ctx = { isIdle: () => idle };
+  await host.emit("agent_end", { type: "agent_end" }, ctx);
+  idle = false;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0);
+  idle = true;
+  await host.emit("agent_end", { type: "agent_end" }, ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
+});
+
+test("adaptHost: a rejected agent_end handler leaves host error handling intact and still settles", async () => {
+  const host = skillHost();
+  const adapted = adaptHost(host.api);
+  const order: string[] = [];
+  adapted.on("agent_settled", () => { order.push("settled"); });
+  let failIo = (_error: Error): void => {};
+  const io = new Promise<void>((_resolve, reject) => { failIo = reject; });
+  adapted.on("agent_end", async () => { await io; });
+  adapted.on("agent_end", () => { order.push("second"); });
+  await Promise.resolve();
+  assert.equal(host.handlers.get("agent_end")?.length, 4, "host owns each handler's timeout and errors");
+  const ended = host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, [], "do not settle while failed handler still waits");
+  failIo(new Error("boom"));
+  await assert.rejects(ended, /boom/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ["second", "settled"]);
+});
+
+test("adaptHost: host timeout advances to settle even if an agent_end promise remains pending", async () => {
+  const host = skillHost();
+  const adapted = adaptHost(host.api);
+  let settled = 0;
+  let finishIo = (): void => {};
+  const io = new Promise<void>(resolve => { finishIo = resolve; });
+  adapted.on("agent_settled", () => { settled++; });
+  adapted.on("agent_end", () => io);
+  await Promise.resolve();
+  const callbacks = host.handlers.get("agent_end")!;
+  assert.equal(callbacks.length, 3);
+  const event = { type: "agent_end" };
+  const context = { isIdle: () => true };
+  await callbacks[0]!(event, context); // Capture pending async work before user handlers.
+  const timedOut = callbacks[1]!(event, context); // Host stops awaiting this handler on timeout.
+  await callbacks[2]!(event, context); // Host advances to the settle handler.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
+  finishIo();
+  await timedOut;
 });
 
 test("adaptHost: command contexts get getSystemPromptOptions with the active skills", async () => {

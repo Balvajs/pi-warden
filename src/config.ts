@@ -535,7 +535,7 @@ export function defaultConfig(): WardenConfig {
   };
 }
 
-/** Mirrors Pi's agent directory rule so the file sits next to pi-typesafe's auth.json. */
+/** The user file is in the host's agent directory: `~/.pi/agent` on Pi, `~/.omp/agent` on oh-my-pi. `PI_CODING_AGENT_DIR` overrides it. */
 export function userConfigPath(): string {
   const configured = process.env.PI_CODING_AGENT_DIR?.trim();
   const agentDir = configured

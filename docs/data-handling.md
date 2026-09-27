@@ -20,6 +20,8 @@ With consent, requests go to `https://api.typesafe.ai` (default) or `https://ope
 
 ## What stays on this machine
 
+Default paths below are for Pi. On oh-my-pi, pi-warden uses `~/.omp/agent` instead of `~/.pi/agent`, but pi-typesafe's `auth.json` still defaults to `~/.pi/agent/pi-typesafe/`. `PI_CODING_AGENT_DIR` overrides both.
+
 - The hold feedback log under `~/.pi/agent/pi-warden/holds/`, owner-only: one JSON line per judged call with tool, pattern ids, scores, level, mode, outcome, and the length of the agent's stated plan; never the command, prompt, or plan text. A redacted tool+path excerpt is included for auditing off-task and intent-mismatch. `"action": { "feedbackLog": false }` turns the file off.
 - The rules verdict log under `~/.pi/agent/pi-warden/rules/`, owner-only: one JSON line per scored rule per judgment from Jev (time, session id, project-relative path, tool, rule id and name, outcome, P(violation), the threshold in force, whether it was a finding, and `cleared: true` when a later judgment cleared an earlier finding on the same path). No written content and no rule body. The file is keyed by a hash of the project path, keeps the newest 5,000 records, and is read only by `/warden report`, which sends nothing.
 - An owner-only SQLite database under `~/.pi/agent/pi-warden/holds.db` stores redacted hold context (plan, summary, redacted command preview, outcomes) for held and judged-allowed calls (`held = 1` and `held = 0`), for learning and retention (configurable, default 365 days). Calls the guard skipped as read-only are not stored. The `PI_WARDEN_DB` environment variable overrides this path; tests and eval runs use it to write to an isolated database instead of the user's.

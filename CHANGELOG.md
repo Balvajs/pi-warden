@@ -6,7 +6,15 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### Fixed
+
+- pi-warden runs on oh-my-pi and other hosts that load Pi extensions through a compatibility layer. `src/host-compat.ts` maps the host API onto the Pi contract: `before_agent_start` gets `systemPromptOptions` with the active skills, and an `appendSystemPrompt` becomes the host's `systemPrompt` array. An input the extension handles is also marked `handled`. `agent_settled` runs after pi-warden's `agent_end` handlers have been dispatched and the host becomes idle. If background work is cancelled without another `agent_end`, the adapter waits for that work to drain. Command contexts get `getSystemPromptOptions()`. On upstream Pi the API is not changed.
+- Data paths follow the host: the user config, the `/warden index` directory, and `holds.db` use the host's agent directory (`~/.pi/agent` on Pi, `~/.omp/agent` on oh-my-pi), and the project file uses the host's config directory (`.pi/pi-warden.json` or `.omp/pi-warden.json`).
+- On a host whose overlay handle cannot release focus, Escape closes the trace and config panels.
+
+### Docs
+
+- `docs/configuration.md`, `docs/data-handling.md`, `docs/commands.md`, and `docs/faq.md` say that paths follow the host.
 
 ## 0.71.0
 

@@ -12,7 +12,9 @@
 //    and turns an appendSystemPrompt set by a handler into the host's systemPrompt array result.
 //  - command contexts have no getSystemPromptOptions(): the adapter adds it.
 //  - the input result is read as { handled }, not { action: "handled" }: the adapter adds `handled`.
-//  - there is no agent_settled event: its handlers run after an agent_end that leaves the host idle.
+//  - there is no agent_settled event: the adapter runs the handler after the host dispatches
+//    this extension's agent_end handlers and becomes idle. It also watches async work that can
+//    drain without another agent_end when cancelled.
 //  - message_end results are ignored, and a finalized message cannot be replaced another way:
 //    context.dedupeMessages has no effect on this host.
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
@@ -39,21 +41,43 @@ export function adaptHost(pi: ExtensionAPI): ExtensionAPI {
   const systemPromptOptions = (): SystemPromptOptions => ({ skills: getActiveSkills.call(session).map(toPiSkill) });
 
   const register = pi.on.bind(pi) as (event: string, handler: Handler) => void;
+  const asyncWorkEnds = new WeakSet<object>();
+  // Capture the async-work pause before later agent_end handlers can await I/O. A job may
+  // cancel during one of those handlers and leave no snapshot or follow-up agent_end.
+  register("agent_end", (event, ctx) => {
+    if ((event as { willContinue?: unknown } | null)?.willContinue !== true) return;
+    const snapshot = asyncJobSnapshot(ctx);
+    if (snapshot && hasAsyncWork(snapshot)) asyncWorkEnds.add(event as object);
+  });
+  let endGeneration = 0;
+  // Pi emits agent_settled once per prompt, after every agent_end handler and continuation.
+  // Register its host stand-in after extension setup. omp then owns each callback's timeout
+  // and error report, and advances to the stand-in even if one callback times out.
+  // Other extensions may still have agent_end handlers after ours; the stand-in reads only
+  // pi-warden's state.
   const on = (event: string, handler: Handler): void => {
     if (event === "before_agent_start") return register(event, (e, ctx) => beforeAgentStart(e, ctx, handler, systemPromptOptions()));
     if (event === "input") return register(event, async (e, ctx) => inputResult(await handler(e, ctx)));
-    // Pi emits agent_settled once per prompt, after every agent_end handler and every continuation.
-    // The handler is deferred past the agent_end handlers; a host that is still busy then is
-    // starting a continuation (a queued follow-up), so the settle waits for the run that ends idle.
     if (event === "agent_settled") {
-      return register("agent_end", (_e, ctx) => {
+      queueMicrotask(() => register("agent_end", (e, ctx) => {
+        const generation = ++endGeneration;
+        if ((e as { willContinue?: unknown } | null)?.willContinue === true) {
+          // A cancelled background job can drain without another agent_end. The host drops
+          // awaitingAsyncWork before extensions see the event, so an earlier extension may
+          // drain it before our observer runs. Give an empty snapshot one host-dispatch grace
+          // period; a later agent_end or a running continuation suppresses the fallback.
+          const snapshot = asyncJobSnapshot(ctx);
+          if (snapshot) {
+            const hadAsyncWork = asyncWorkEnds.has(e as object) || hasAsyncWork(snapshot);
+            watchAsyncWork(ctx, handler, () => generation === endGeneration, hadAsyncWork ? 500 : 1000);
+          }
+          return;
+        }
         setImmediate(() => {
-          if (!isIdle(ctx)) return;
-          Promise.resolve()
-            .then(() => handler({ type: "agent_settled" }, ctx))
-            .catch(error => console.error("pi-warden: agent_settled handler failed:", error));
+          if (generation === endGeneration) settle(handler, ctx);
         });
-      });
+      }));
+      return;
     }
     return register(event, handler);
   };
@@ -97,6 +121,41 @@ function systemPromptOf(value: unknown): SystemPrompt | undefined {
 function inputResult(result: unknown): unknown {
   const action = (result as { action?: unknown } | undefined)?.action;
   return action === "handled" ? { ...(result as object), handled: true } : result;
+}
+
+type AsyncJobSnapshot = { running: readonly unknown[]; delivery: { queued: number; delivering: boolean } };
+
+function asyncJobSnapshot(ctx: unknown): AsyncJobSnapshot | undefined {
+  const get = (ctx as { getAsyncJobSnapshot?: unknown } | null)?.getAsyncJobSnapshot;
+  if (typeof get !== "function") return undefined;
+  const snapshot = get.call(ctx);
+  return snapshot && Array.isArray(snapshot.running) ? snapshot as AsyncJobSnapshot : undefined;
+}
+
+function hasAsyncWork(snapshot: AsyncJobSnapshot): boolean {
+  return snapshot.running.length > 0 || (snapshot.delivery?.queued ?? 0) > 0 || snapshot.delivery?.delivering === true;
+}
+
+function watchAsyncWork(ctx: unknown, handler: Handler, isCurrent: () => boolean, delayMs: number): void {
+  const check = () => {
+    if (!isCurrent()) return;
+    const snapshot = asyncJobSnapshot(ctx);
+    if (snapshot && hasAsyncWork(snapshot)) {
+      setTimeout(check, 500).unref();
+      return;
+    }
+    setImmediate(() => {
+      if (isCurrent()) settle(handler, ctx);
+    });
+  };
+  setTimeout(check, delayMs).unref();
+}
+
+function settle(handler: Handler, ctx: unknown): void {
+  if (!isIdle(ctx)) return;
+  void Promise.resolve()
+    .then(() => handler({ type: "agent_settled" }, ctx))
+    .catch(error => console.error("pi-warden: agent_settled handler failed:", error));
 }
 
 /** A context without isIdle() cannot report a continuation, so it counts as idle. */
