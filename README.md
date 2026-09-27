@@ -20,7 +20,7 @@
 
 **743 sessions · 193 risky actions stopped before they ran · 78% of fake "done"s turned into real test runs**
 
-<sub>Nine days of real use, 2026-09-16 to 2026-09-24. Method and noise: [field report](eval/reports/2026-09-24-field-usage/).</sub>
+<sub>Nine days of the maintainer's real use across all their projects, not just this one, 2026-09-16 to 2026-09-24. Method and noise: [field report](eval/reports/2026-09-24-field-usage/).</sub>
 
 </div>
 
