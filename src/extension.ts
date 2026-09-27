@@ -40,9 +40,15 @@ import type { OutputVerdict } from "./output.js";
 import { classifyRecall, detectSearchTool, recallInstruction } from "./recall.js";
 import type { SearchTool } from "./recall.js";
 import { maskSecrets, redact } from "./redact.js";
-import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES } from "./rules.js";
+import { formatRules, pathNoteSteer, projectPath, RulesGuard, rulesSteer, RULES_FILE, FALLBACK_FILES, turnRulesFor } from "./rules.js";
 import type { RulesVerdict } from "./rules.js";
+import { evaluateTurnRun, SHELL_RULES_CHECKS, snapshotTree, turnSteer } from "./turn-rules.js";
+import type { SnapshotResult } from "./turn-rules.js";
 import { checkRules, formatRulesCheck } from "./rules-lint.js";
+import { parseRulesAuditArgs, parseBenchArgs, runRulesAudit, runBench, formatRulesAudit, formatBench } from "./rules-audit.js";
+import type { RulesCheckResult } from "./rules-lint.js";
+import { calibrate, calibrateGate, calibrationNotice, collectHistory, formatCalibration, planCalibration, tuneRequest, CALIBRATE_DEFAULT_COMMITS, CALIBRATE_DEFAULT_MAX } from "./rules-calibrate.js";
+import type { Calibration, HistoryCommit } from "./rules-calibrate.js";
 import { readRulesLog, RulesLog, rulesLogPath } from "./rules-log.js";
 import { buildRulesReport, formatRulesReport, REPORT_DEFAULT_DAYS } from "./rules-report.js";
 import { checkPiWardenMissing } from "./rules-file.js";
@@ -85,9 +91,6 @@ export const disclosure = "With TypeSafe judgments enabled, pi-warden sends to a
 
 const WIDGET = PACKAGE_NAME;
 const CONFIRM_TEXT_LIMIT = 500;
-
-/** Rules requests one bash command may start; the other files it writes are recorded as skipped. */
-const SHELL_RULES_CHECKS = 5;
 
 /** Which guard spent the user's attention. The status line reports one count per guard. */
 export type SteerGuard = "action" | "rules" | "security" | "stuck" | "repeat" | "done" | "prose" | "runaway" | "subagent" | "conscience" | "loops";
@@ -429,12 +432,20 @@ export default function wardenExtension(host: ExtensionAPI): void {
   let fullOutputs = new Map<string, { text: string; path?: string }>();
   let evidence: RunEvidence = emptyEvidence();
   let doneNudged = false;
+  // Turn rules: the read-only working-tree snapshot started at run start and awaited at run end, and the files a
+  // per-edit judgment saw.
+  let turnSnapshot: Promise<SnapshotResult> | undefined;
+  let turnJudged = new Set<string>();
   /** True from a delivered warden follow-up that starts a turn until the next run starts: that run keeps the evidence. */
   let wardenContinuation = false;
   let warnedFallback = false;
   let warnedMissingRules = false;
   /** True while /warden init is sending a prompt and waiting for the agent to generate pi-warden.md. */
   let initRunning = false;
+  /** The most recent /warden rules calibrate result; /warden rules tune reads its flagged rules. */
+  let lastCalibration: Calibration | undefined;
+  /** The most recent /warden rules check result of this session; /warden rules tune reads its flagged rules. */
+  let lastCheck: RulesCheckResult | undefined;
   /** True while /warden audit is sending a prompt and waiting for the agent to write the report. */
   let auditRunning = false;
   const prose = new ProseTrend();
@@ -930,6 +941,8 @@ export default function wardenExtension(host: ExtensionAPI): void {
     warnedFallback = false;
     warnedMissingRules = false;
     initRunning = false;
+    lastCalibration = undefined;
+    lastCheck = undefined;
     await initSchema(loadConfig({ dirs }).learning.retentionDays, dirs);
     stats = freshStats();
     steerWatch.clear();
@@ -1315,9 +1328,17 @@ export default function wardenExtension(host: ExtensionAPI): void {
 
   // Each low-level run collects its own evidence of changes and checks. A run that a warden follow-up started continues
   // the previous run's work, so it keeps that evidence: the changes behind a done-check nudge still need a passing check.
-  pi.on("agent_start", async () => {
+  pi.on("agent_start", async (_event, ctx) => {
     if (!wardenContinuation) evidence = emptyEvidence();
     wardenContinuation = false;
+    // Turn rules need a baseline of the working tree. The snapshot starts here as a promise and is awaited at
+    // agent_end, so this hook never waits for git to hash the changed and untracked files. One trace line when a run
+    // with turn rules gets no baseline. With no turn rules a failed snapshot is silent: a project without them sees
+    // no change.
+    turnJudged = new Set();
+    turnSnapshot = undefined;
+    const turnConfig = configFor(ctx);
+    if (turnConfig.enabled && turnConfig.rules.enabled) turnSnapshot = snapshotTree(ctx.cwd);
   });
 
   // Every turn that runs after a compression is a turn that did not carry the removed text.
@@ -1437,6 +1458,15 @@ export default function wardenExtension(host: ExtensionAPI): void {
       : undefined;
     // Each file is one rules request, so a script that writes many files would start as many requests at once.
     const shellFiles = mergeWrites(shell?.writes ?? []);
+    // Turn rules: a file these checks judge is not judged again at the end of the run.
+    if (config.rules.enabled) {
+      const inputPath = typeof (event.input as Record<string, unknown>).path === "string" ? (event.input as Record<string, unknown>).path as string : "";
+      const seen = event.toolName === "write" || event.toolName === "edit" ? [inputPath] : shellFiles.slice(0, SHELL_RULES_CHECKS).map(write => write.path);
+      for (const path of seen) {
+        const rel = projectPath(path, ctx.cwd);
+        if (rel) turnJudged.add(rel);
+      }
+    }
     const shellSkips: ShellSkip[] = [...(shell?.skips ?? []), ...shellFiles.slice(SHELL_RULES_CHECKS).map(write => ({ path: write.path, reason: `only the first ${SHELL_RULES_CHECKS} files a command writes are judged` }))];
     const rulesChecks: Array<{ check: Promise<RulesVerdict>; shellWrite?: ShellWrite }> = !config.rules.enabled ? []
       : event.toolName === "write" || event.toolName === "edit" ? [{ check: rulesGuard.inspect(call, siblings, rulesOptions) }]
@@ -2222,6 +2252,54 @@ export default function wardenExtension(host: ExtensionAPI): void {
         }
       } catch (err) { const cat = err instanceof Error ? (/(timeout|timed out)/i.test(err.message) ? "timeout" : /(auth|key|credential|401|403)/i.test(err.message) ? "auth" : /(network|fetch|connect)/i.test(err.message) ? "network" : "other") : "other"; if (!warnedErrorCategories.has(cat)) { warnedErrorCategories.add(cat); console.warn(`pi-warden: conscience ${cat}`); } }
     }
+    // ── Turn rules: one end-of-run judgment against the whole diff, and the files no per-edit check saw ──
+    // One steer for the findings, through the done-check's delivery; the verdicts land in the rules log like the rest.
+    if (config.rules.enabled && turnSnapshot) {
+      // The run end waits for the snapshot the run start began; a run that ended first has been waiting since.
+      const snapshot = await turnSnapshot;
+      turnSnapshot = undefined;
+      const set = rulesGuard.store.load(ctx.cwd, config.rules);
+      if (!snapshot.tree) {
+        if (set && turnRulesFor(set).length) record(ctx, config, "rules", `warden · rules · turn rules skipped this run: ${snapshot.reason}`, ["trigger: agent_end", "no working-tree snapshot: the end-of-run pass will not run this turn rules check"]);
+      } else {
+        const turnRun = await evaluateTurnRun({ cwd: ctx.cwd, config: config.rules, set, judge, timeoutMs: config.timeoutMs, signal: ctx.signal, task: latestUserPrompt(ctx), startTree: snapshot.tree, alreadyJudged: turnJudged });
+        if (turnRun.skipped) {
+          record(ctx, config, "rules", `warden · rules · end-of-run pass skipped: ${turnRun.skipped}`, ["trigger: agent_end"]);
+        }
+        // One trace line names the files the per-run cap left unjudged, like the skips of one command's shell writes.
+        if (turnRun.skips.length) {
+          const paths = turnRun.skips.flatMap(skip => (skip.path ? [skip.path] : []));
+          record(ctx, config, "rules", renderTemplate(config.widget.rules, { guard: "rules", tool: "unseen change", path: paths.length ? paths.join(", ") : "file change", status: "skipped" }), turnRun.skips.map(skip => `unseen change not judged${skip.path ? ` (${skip.path})` : ""}: ${skip.reason}`));
+        }
+        let counts: ReadonlyMap<string, number> = new Map();
+        for (const verdict of turnRun.verdicts) counts = rulesGuard.count(verdict);
+        const hasFindings = turnRun.verdicts.some(verdict => verdict.findings.length > 0);
+        const told = hasFindings && adaptiveSend(ctx, config, "rules") ? turnSteer(turnRun.verdicts, counts) : undefined;
+        const delivered = told ? steer(config, "rules", told, { deliverAs: "followUp", triggerTurn: true }) : false;
+        if (delivered) watchSteer(ctx, config, ["rules"]);
+        for (const verdict of turnRun.verdicts) {
+          const shown = renderTemplate(config.widget.rules, { ...rulesTokens(verdict), tool: verdict.tool === "turn" ? "turn" : "unseen change", path: verdict.tool === "turn" ? "the run's diff" : verdict.path });
+          const cuts = verdict.tool === "turn" && turnRun.cuts.length ? [`diff caps cut: ${turnRun.cuts.join("; ")}`] : [];
+          if (verdict.source !== "skipped") {
+            stats.ruleChecks++;
+            if (verdict.error) noteError(ctx, verdict.error, verdict.errorCode);
+            if (verdict.source === "typesafe") {
+              for (const observation of rulesLog?.record(verdict, config.rules.threshold, Date.now(), config.rules.softThreshold) ?? []) {
+                if (observation.cleared) record(ctx, config, "rules", `rules: ${observation.name} now clear on ${verdict.path}`, [`clear: a later judgment on this path scored ${observation.violation.toFixed(2)}, below the ${config.rules.threshold} threshold`]);
+              }
+            }
+            if (verdict.findings.length) {
+              stats.ruleViolations++;
+              if (ctx.hasUI && config.notices) ctx.ui.notify(`warden · rules · ${verdict.tool === "turn" ? "this run's changes" : verdict.path}: ${verdict.findings.map(finding => `${finding.name} (${finding.violation.toFixed(2)})`).join("; ")}`, "warning");
+            }
+            const agentTold = told && delivered ? `agent told: ${told}` : told ? `steer recorded, not delivered (a repeat or the per-run budget): ${told}` : undefined;
+            record(ctx, config, "rules", shown, [...cuts, ...rulesDetails(verdict, agentTold)]);
+          } else {
+            record(ctx, config, "rules", shown, [`${verdict.tool} ${verdict.path}: ${verdict.skippedReason}`]);
+          }
+        }
+      }
+    }
     if (!finalMessage || !judge) return;
     // Pi shows the agent as working until this hook returns, so the two independent checks share one round trip.
     const task = latestUserPrompt(ctx);
@@ -2332,13 +2410,16 @@ export default function wardenExtension(host: ExtensionAPI): void {
     },
   });
 
-  const actions = ["status", "rules", "report", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute"];
+  const actions = ["status", "rules", "report", "enable", "disable", "mode", "config", "test", "trace", "init", "audit", "index", "prefs", "loops", "recommend", "unmute", "bench"];
   pi.registerCommand("warden", {
     description: "pi-warden status, active rules, config (set/get/editor), TypeSafe consent, mode, trace panel, recommend, standing preferences, open loops, and a synthetic guard test",
     getArgumentCompletions(prefix) {
       const matches: Array<{ value: string; label: string; description?: string }> = actions.filter(action => action.startsWith(prefix)).map(action => ({ value: action, label: action }));
-      // `rules check` is the one two-word action: `rules` on its own stays the local list.
+      // `rules check`, `rules audit`, `rules calibrate`, and `rules tune` are two-word actions: `rules` on its own stays the local list.
       if ("rules check".startsWith(prefix)) matches.push({ value: "rules check", label: "rules check", description: "which of the active rules the guard cannot judge well" });
+      if ("rules audit".startsWith(prefix)) matches.push({ value: "rules audit", label: "rules audit", description: "judge existing files against the project rules as if they had just been written" });
+      if ("rules calibrate".startsWith(prefix)) matches.push({ value: "rules calibrate", label: "rules calibrate", description: "replay recent commits through the active rules and flag the ones that fire on everything or cannot decide" });
+      if ("rules tune".startsWith(prefix)) matches.push({ value: "rules tune", label: "rules tune", description: "ask the agent to rewrite the rules the latest calibrate or rules check flagged" });
       return matches.length ? matches : null;
     },
     async handler(args, ctx) {
@@ -2382,6 +2463,45 @@ export default function wardenExtension(host: ExtensionAPI): void {
           ].join(" "));
           return;
         }
+        if (action === "rules" && argument === "audit") {
+          const parsed = parseRulesAuditArgs(tokens.slice(2));
+          if (parsed.error) { report(parsed.error, "warning"); return; }
+          const off = judgmentsOffReason(config);
+          const judge = judgeFor(config);
+          const result = await runRulesAudit({
+            cwd: ctx.cwd, paths: parsed.paths, max: parsed.max, yes: parsed.yes, config: config.rules,
+            set: rulesGuard.store.load(ctx.cwd, config.rules), judge, timeoutMs: config.timeoutMs, signal: ctx.signal,
+            destination: backendHost(config.typesafeBackend),
+            confirm: ctx.hasUI ? (title, body) => ctx.ui.confirm(title, body, ctx.signal ? { signal: ctx.signal } : {}) : undefined,
+          });
+          switch (result.status) {
+            // No key, no consent, or a spent budget: say why and send nothing.
+            case "no-judge":
+              report(`Rules audit sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""}`);
+              return;
+            case "no-files": report(`Rules audit sent nothing: ${result.reason}.`); return;
+            case "needs-yes": report(`Rules audit sent nothing: a headless run needs --yes before ${result.files} file samples go to ${backendHost(config.typesafeBackend)} (${result.leftOut} more files left out at the --max ${parsed.max} cap).`, "warning"); return;
+            case "cancelled": report("Rules audit cancelled. Nothing was sent."); return;
+            case "done": report(formatRulesAudit(result.outcome)); return;
+          }
+          return;
+        }
+        if (action === "bench") {
+          const parsed = parseBenchArgs(tokens.slice(1));
+          if (parsed.error) { report(parsed.error, "warning"); return; }
+          const off = judgmentsOffReason(config);
+          const judge = judgeFor(config);
+          const result = await runBench({ runs: parsed.runs, cwd: ctx.cwd, config: config.rules, set: rulesGuard.store.load(ctx.cwd, config.rules), judge, getUsage: judge ? () => judge.getUsage() : undefined, timeoutMs: config.timeoutMs, signal: ctx.signal });
+          switch (result.status) {
+            // No key, no consent, or a spent budget: say why and send nothing.
+            case "no-judge":
+              report(`Bench sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""}`);
+              return;
+            case "skipped": report(`Bench sent nothing: ${result.reason}.`); return;
+            case "done": report(formatBench(result)); return;
+          }
+          return;
+        }
         if (action === "rules") {
           if (argument === "check") {
             const off = judgmentsOffReason(config);
@@ -2391,7 +2511,77 @@ export default function wardenExtension(host: ExtensionAPI): void {
               report(`Rules check sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
               return;
             }
+            if (result.source === "typesafe") lastCheck = result;
             report(formatRulesCheck(result));
+            return;
+          }
+          if (argument === "calibrate") {
+            const usage = "Usage: /warden rules calibrate [--commits N] [--max N] [--yes].";
+            const commitsMatch = /(?:^|\s)--commits\s+(\S+)/.exec(tail);
+            const maxMatch = /(?:^|\s)--max\s+(\S+)/.exec(tail);
+            const yes = /(?:^|\s)--yes(?:\s|$)/.test(tail);
+            const commits = commitsMatch ? Number(commitsMatch[1]) : CALIBRATE_DEFAULT_COMMITS;
+            const max = maxMatch ? Number(maxMatch[1]) : CALIBRATE_DEFAULT_MAX;
+            if ((commitsMatch && (!Number.isInteger(commits) || commits < 1)) || (maxMatch && (!Number.isInteger(max) || max < 1))) { report(usage, "warning"); return; }
+            const set = rulesGuard.store.load(ctx.cwd, config.rules);
+            if (!set) { report("No rules file detected. Run /warden init to create project-specific rules."); return; }
+            if (set.proseOnly) { report(`No rules to calibrate: ${set.sources.join(", ")} has no rule-shaped sections, so the guard judges nothing there.`); return; }
+            if (set.aggregate !== undefined && !set.rules.length) { report(`No separate rules to calibrate: ${set.sources.join(", ")} has no rule headings, so the guard judges it as one document.`); return; }
+            const off = judgmentsOffReason(config);
+            const judge = judgeFor(config);
+            if (!judge) {
+              report(`Rules calibrate sent nothing: Jev judgments are off${off === "budget" ? " (the request budget is used up)" : ""}.${off && off !== "budget" ? ` ${judgmentsOffText(off, config.typesafeBackend, !ctx.hasUI)}` : ""} /warden rules shows the rule set locally.`);
+              return;
+            }
+            let history: HistoryCommit[];
+            try {
+              history = collectHistory(ctx.cwd, commits);
+            } catch (error) {
+              report(`Rules calibrate could not read the git history: ${error instanceof Error ? error.message : String(error)}`, "warning");
+              return;
+            }
+            const plan = planCalibration(history, { set, config: config.rules, cwd: ctx.cwd, maxRequests: max });
+            if (!plan.requests) {
+              report(`Rules calibrate sent nothing: no changed file in the last ${commits} non-merge commit${commits === 1 ? "" : "s"} is judgeable${plan.skipped.length ? ` (${plan.skipped.length} change${plan.skipped.length === 1 ? "" : "s"} skipped)` : ""}.`);
+              return;
+            }
+            // Nothing leaves the machine before this gate: the dialog shows the count and the redacted diffs, and a
+            // headless run needs the explicit --yes.
+            const gate = calibrateGate({ hasUI: ctx.hasUI, yes });
+            if (gate.kind === "refuse") { report(gate.reason, "warning"); return; }
+            if (gate.kind === "confirm" && !await ctx.ui.confirm(`warden: send ${plan.requests} calibration request${plan.requests === 1 ? "" : "s"}?`, calibrationNotice(plan))) {
+              report("Cancelled. Nothing was sent.");
+              return;
+            }
+            const result = await calibrate(history, { set, config: config.rules, cwd: ctx.cwd, judge, timeoutMs: config.timeoutMs, maxRequests: max, signal: ctx.signal });
+            (rulesLog ??= new RulesLog(ctx.cwd, String(process.pid))).appendRecords(result.records);
+            lastCalibration = result;
+            report(formatCalibration(result));
+            return;
+          }
+          if (argument === "tune") {
+            const request = tuneRequest({ calibration: lastCalibration, check: lastCheck, rules: rulesGuard.store.load(ctx.cwd, config.rules)?.rules ?? [] });
+            if ("reason" in request) { report(request.reason); return; }
+            initRunning = true;
+            let sent = true;
+            if (ctx.hasUI) ctx.ui.notify("pi-warden: Sending the rules rewrite prompt...", "info");
+            try {
+              // sendUserMessage throws when the agent is not idle. Brief wait so a
+              // just-closing confirm dialog does not cause a race.
+              for (let attempt = 0; attempt < 40; attempt++) {
+                if (ctx.isIdle()) break;
+                await new Promise(resolve => setTimeout(resolve, 250));
+              }
+              pi.sendUserMessage(request.prompt);
+              await ctx.waitForIdle();
+            } catch (err) {
+              sent = false;
+              const detail = err instanceof Error ? err.message : String(err);
+              report(`pi-warden rules tune failed: ${detail}.`, "error");
+            } finally {
+              initRunning = false;
+            }
+            if (sent) report("Rewrite prompt sent. The agent edits pi-warden.md with its own tools; review the changes.");
             return;
           }
           report(rulesGuard.details(ctx.cwd, config.rules));
@@ -2401,9 +2591,13 @@ export default function wardenExtension(host: ExtensionAPI): void {
           const match = /--days\s+(\d+)/.exec(tail);
           const days = match ? Number(match[1]) : REPORT_DEFAULT_DAYS;
           if (match && days < 1) { report("Usage: /warden report [--days N], where N is at least 1. Default: 30 days.", "warning"); return; }
-          const records = await readRulesLog(rulesLogPath(ctx.cwd, dirs));
+          const all = await readRulesLog(rulesLogPath(ctx.cwd, dirs));
+          // Calibration replays carry `source: "calibrate"`; the live verdict report counts only the live records and
+          // says how many replays it set apart.
+          const replays = all.filter(record => record.source === "calibrate").length;
           const set = rulesGuard.store.load(ctx.cwd, config.rules);
-          report(formatRulesReport(buildRulesReport(records, { days, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [] })));
+          const text = formatRulesReport(buildRulesReport(all, { days, currentRules: set?.rules.map(rule => ({ id: rule.id, name: rule.name })) ?? [], source: "live" }));
+          report(replays ? `${text}\n${replays} calibration replay record${replays === 1 ? "" : "s"} in this log, counted apart (source: calibrate).` : text);
           return;
         }
         if (action === "trace") {

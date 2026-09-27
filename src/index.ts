@@ -40,14 +40,18 @@ export { renderTemplate, actionTokens, stuckTokens, doneTokens, proseTokens, run
 export type { WidgetConfig, WidgetPlacement, WidgetBarMode, Tokens } from "./widget.js";
 export { Trace, actionDetails, stuckDetails, doneDetails, proseDetails, runawayDetails, rulesDetails } from "./trace.js";
 export type { TraceEntry, GuardName } from "./trace.js";
-export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, AGGREGATE_QUESTION, LOCATOR_QUESTION } from "./rules.js";
-export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig } from "./rules.js";
-export { checkRules, formatRulesCheck, formatRuleCheck, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";
+export { parseRules, condense, isRuleShaped, globToRegExp, matchGlob, projectPath, RuleStore, rulesFor, describeRuleSet, formatRuleSetDetails, describeTarget, buildRulesRequest, ruleQuestion, scoreRuleAnswers, evaluateRules, skipReason, rulesSteer, formatRules, pathNotes, pathNoteSteer, RulesGuard, RULES_FILE, FALLBACK_FILES, MAX_RULES, MAX_EDITS, EDIT_TEXT_LIMIT, EDIT_CONTEXT_LINES, AGGREGATE_QUESTION, LOCATOR_QUESTION, editRulesFor, turnRulesFor, evaluateRulesTarget, scoreAnswers } from "./rules.js";
+export type { Rule, RuleSet, RuleOutcome, RuleScore, RuleFinding, RuleAnswer, RuleScoring, RulesVerdict, RulesOptions, RulesTarget, EditView, PathNote, RulesCallRef, RulesTier, RulesSourceConfig, RuleWhen, RuleScoreEntry } from "./rules.js";
+export { snapshotTree, diffSince, unjudgedFiles, evaluateTurnRules, evaluateTurnRun, buildTurnRequest, turnRuleQuestion, turnSteer, TURN_PATH, TURN_QUESTION_PREFIX } from "./turn-rules.js";
+export type { SnapshotResult, TurnDiff, TurnFileDiff, TurnRunOptions, TurnRunResult, TurnRulesOptions } from "./turn-rules.js";
+export { checkRules, formatRulesCheck, formatRuleCheck, checkReasons, buildRulesCheckRequest, ruleCheckView, judgeableQuestion, mechanicalQuestion, MECHANICAL_CUTOFF, CHECK_ABOUT, JUDGEABILITY_REASONS, JUDGEABLE_PREFIX, MECHANICAL_PREFIX } from "./rules-lint.js";
 export type { RuleCheck, RuleCheckView, RuleJudgeability, RulesCheckOptions, RulesCheckRequest, RulesCheckResult, RulesCheckSource } from "./rules-lint.js";
 export { rulesLogPath, readRulesLog, trimRecords, RuleClearTracker, RulesLog, RULES_LOG_MAX_RECORDS } from "./rules-log.js";
 export type { RuleRecord, RuleObservation, RulesLogOptions } from "./rules-log.js";
 export { buildRulesReport, formatRulesReport, compareRows, REPORT_DEFAULT_DAYS, NEVER_FIRES_MIN, FIRES_RATE_MAX, UNDECIDED_LOW, UNDECIDED_HIGH } from "./rules-report.js";
-export type { RuleFlag, RuleReportRow, RulesReport } from "./rules-report.js";
+export type { RuleFlag, RuleReportRow, RulesReport, ReportSource } from "./rules-report.js";
+export { parseHistory, collectHistory, changeSkipReason, editViews, planCalibration, calibrate, formatCalibration, calibrateGate, calibrationNotice, tuneTargets, buildTunePrompt, tuneRequest, CALIBRATE_DEFAULT_COMMITS, CALIBRATE_DEFAULT_MAX } from "./rules-calibrate.js";
+export type { HistoryHunk, HistoryFile, HistoryCommit, CalibrateSkip, CalibrateSample, CalibratePlan, PlanOptions, RuleCalibration, Calibration, CalibrateOptions, CalibrateGate, TuneRule, TuneRequest } from "./rules-calibrate.js";
 export { resolveRulesFile, extractRules, checkPiWardenMissing } from "./rules-file.js";
 export type { ResolvedRulesFile } from "./rules-file.js";
 export { writeStarterRules, generateStarterRules, detectProjectType, buildProjectContext, buildInitPrompt } from "./init.js";
@@ -56,3 +60,5 @@ export { initSchema, recordHold, recordOutcome as recordHoldOutcome, querySmartH
 export type { HoldRecord, HoldScores, HoldLevel, HoldOutcome, HoldContext, SmartHistory, ConfidenceResult, SkipResult, ThresholdAdjustment, PatternInsight, ContextRecommendation, SteerEffectivenessReport } from "./learning.js";
 export { buildAuditPrompt, snapshotReport, reportOutcome } from "./audit.js";
 export type { ReportSnapshot } from "./audit.js";
+export { parseRulesAuditArgs, parseBenchArgs, collectAuditFiles, runRulesAudit, ruleAuditRows, flaggedAuditFiles, formatRulesAuditRows, formatRulesAuditFiles, formatRulesAudit, rulesAuditMarkdown, writeRulesAuditReport, runBench, formatBench, percentile, BENCH_SAMPLE, AUDIT_DEFAULT_MAX, AUDIT_CONCURRENCY, AUDIT_REPORT_FILE, RULES_AUDIT_USAGE, BENCH_USAGE } from "./rules-audit.js";
+export type { RulesAuditArgs, BenchArgs, AuditFilePlan, RulesAuditFileResult, RulesAuditRow, RulesAuditOutcome, RulesAuditResult, RulesAuditOptions, RulesAuditFlag, RulesAuditFileFlags, BenchUsage, BenchOptions, BenchResult } from "./rules-audit.js";
