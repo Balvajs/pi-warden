@@ -29,14 +29,16 @@ writeFileSync(stubPath, [
   "export function isViewportTUI() { return false; }",
   "export default {};",
 ].join("\n"));
-writeFileSync(hooksPath, `import { pathToFileURL } from 'node:url';
+// The resolve hook runs on the module-customization hooks thread, which does not see env vars
+// set on the main thread after registration (notably on Node 22). The hook file sits beside the
+// stub, so it resolves the stub from its own URL instead of a main-thread env channel.
+writeFileSync(hooksPath, `const stubURL = new URL('./stub.mjs', import.meta.url).href;
 export async function resolve(specifier, context, next) {
   const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui'];
-  if (peers.includes(specifier)) return { url: pathToFileURL(process.env.STUB_PATH).href, shortCircuit: true };
+  if (peers.includes(specifier)) return { url: stubURL, shortCircuit: true };
   return next(specifier, context);
 }
 `);
-process.env.STUB_PATH = stubPath;
 register(pathToFileURL(hooksPath));
 const { default: wardenExtension } = await import(process.env.EXT_PATH!);
 
