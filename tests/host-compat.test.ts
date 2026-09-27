@@ -23,6 +23,7 @@ function fakeHost(extras: Record<string, unknown> = {}) {
     let onTimeout = (): void => {};
     const timeout = new Promise<void>(resolve => { onTimeout = resolve; });
     const timer = setTimeout(onTimeout, handlerTimeoutMs ?? 2 ** 30);
+    timer.unref?.();
     const run = (handler: Handler) => Promise.race([Promise.resolve(handler(payload, ctx)), timeout]);
     for (const handler of handlers.get(event) ?? []) {
       try { result = await run(handler); } catch (failure) { error ??= failure; }

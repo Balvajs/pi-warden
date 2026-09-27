@@ -77,7 +77,6 @@ test("PI_WARDEN_DB wins over injected dirs", async () => {
 });
 
 test("a failed open is closed, remembered, and warned about once", async () => {
-  const { initSchema } = await import("../src/learning.js");
   const bad = mkdtempSync(join(tmpdir(), "pi-warden-db-bad-"));
   const dirsBad = { agentDir: bad, configDirName: ".pi" };
   const dbPath = join(bad, "pi-warden", "holds.db");
@@ -89,7 +88,7 @@ test("a failed open is closed, remembered, and warned about once", async () => {
   try {
     await initSchema(0, dirsBad);
     await initSchema(0, dirsBad);
-    await recordHold(hold("/proj"), dirsBad).catch(() => undefined);
+    await recordHold(hold("/proj"), dirsBad);
     assert.equal(warnings.filter(text => text.includes("could not open")).length, 1, "warned once, not per call");
     // The failure is per path: a fresh directory still records.
     const fresh = mkdtempSync(join(tmpdir(), "pi-warden-db-fresh-"));

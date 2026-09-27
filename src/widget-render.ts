@@ -77,4 +77,3 @@ export function widgetLines(entries: readonly WidgetEntry[], theme: ThemeLike, w
   }
   return lines;
 }
-

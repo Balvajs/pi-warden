@@ -17,9 +17,19 @@ import { promisify } from "node:util";
 const run = promisify(execFile);
 const root = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
+const hookSource = `
+export async function resolve(specifier, context, next) {
+  const blocked = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"];
+  if (blocked.some(peer => peer === specifier || specifier.startsWith(peer + "/"))) {
+    throw new Error("blocked optional peer (" + specifier + ")");
+  }
+  return next(specifier, context);
+}
+`;
+
 const child = `
 import { register } from "node:module";
-register(new URL("data:text/javascript,export%20async%20function%20resolve(specifier%2C%20context%2C%20next)%20%7B%0A%20%20if%20(specifier%20%3D%3D%3D%20%22%40earendil-works%2Fpi-coding-agent%22%20%7C%7C%20specifier.startsWith(%22%40earendil-works%2Fpi-coding-agent%2F%22)%20%7C%7C%20specifier%20%3D%3D%3D%20%22%40earendil-works%2Fpi-tui%22%20%7C%7C%20specifier.startsWith(%22%40earendil-works%2Fpi-tui%2F%22))%20%7B%0A%20%20%20%20throw%20new%20Error(%22blocked%20optional%20peer%20(%22%20%2B%20specifier%20%2B%20%22)%22)%3B%0A%20%20%7D%0A%20%20return%20next(specifier%2C%20context)%3B%0A%7D"));
+register("data:text/javascript," + encodeURIComponent(${JSON.stringify(hookSource)}));
 process.env.PI_CODING_AGENT_DIR = process.env.PI_WARDEN_TEST_AGENT_DIR;
 const index = await import("./src/index.ts");
 const config = index.defaultConfig();

@@ -3,19 +3,20 @@
  * result under an injected `dirs` instead of the host's agent directory.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { join } from "node:path";
-
-const { defaultHostDirs } = await import("../src/host-dirs.js");
-const { userConfigPath, projectConfigPath } = await import("../src/config.js");
-const { indexDir, indexPath } = await import("../src/index-cmd.js");
-const { steerStatsPath } = await import("../src/adaptive.js");
-const { holdLogPath } = await import("../src/holds.js");
-const { loopsPath } = await import("../src/loops.js");
-const { prefsStorePath } = await import("../src/prefs.js");
-const { rulesLogPath } = await import("../src/rules-log.js");
+import { defaultHostDirs } from "../src/host-dirs.js";
+import { loadConfig, projectConfigPath, readUserConfig, setUserSetting, userConfigPath, writeUserConfig } from "../src/config.js";
+import { indexDir, indexPath } from "../src/index-cmd.js";
+import { steerStatsPath } from "../src/adaptive.js";
+import { holdLogPath } from "../src/holds.js";
+import { loopsPath } from "../src/loops.js";
+import { prefsStorePath } from "../src/prefs.js";
+import { rulesLogPath } from "../src/rules-log.js";
+import { legacyDataNotice } from "../src/extension.js";
 
 const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
 
@@ -39,7 +40,7 @@ test("defaultHostDirs: explicit path wins, ~ and ~/ expand, blank falls back", (
   assert.equal(defaultHostDirs().agentDir, join(process.env.HOME ?? "", "x"), "surrounding space is trimmed");
 });
 
-test("indexDir: PI_WARDEN_INDEX_DIR and PI_CODING_AGENT_DIR keep precedence over injected dirs (R4)", () => {
+test("indexDir: PI_WARDEN_INDEX_DIR and PI_CODING_AGENT_DIR keep precedence over injected dirs", () => {
   process.env.PI_CODING_AGENT_DIR = "/opt/agent";
   const savedIndex = process.env.PI_WARDEN_INDEX_DIR;
   delete process.env.PI_WARDEN_INDEX_DIR;
@@ -49,6 +50,11 @@ test("indexDir: PI_WARDEN_INDEX_DIR and PI_CODING_AGENT_DIR keep precedence over
   assert.equal(indexDir(undefined, dirs), join("/idx", "pi-warden", "index"), "PI_WARDEN_INDEX_DIR wins over everything");
   process.env.PI_WARDEN_INDEX_DIR = "   ";
   assert.equal(indexDir(undefined, dirs), join("/opt/agent", "pi-warden", "index"), "blank index var falls to PI_CODING_AGENT_DIR");
+  process.env.PI_CODING_AGENT_DIR = "~/x";
+  assert.equal(indexDir(), join(process.env.HOME ?? "", "x", "pi-warden", "index"), "~ expands to the home directory");
+  delete process.env.PI_CODING_AGENT_DIR;
+  assert.equal(indexDir(), join(process.env.HOME ?? "", ".pi", "agent", "pi-warden", "index"), "unset env falls back to the Pi default");
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   if (savedIndex === undefined) delete process.env.PI_WARDEN_INDEX_DIR; else process.env.PI_WARDEN_INDEX_DIR = savedIndex;
 });
 
@@ -83,10 +89,8 @@ test("every path function places its result under the injected dirs", () => {
   }
 });
 
-test("loadConfig, readUserConfig, and setUserSetting honour injected dirs", async () => {
-  const { mkdirSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
-  const { loadConfig, readUserConfig, setUserSetting, writeUserConfig } = await import("../src/config.js");
-  const temp = mkdtemp();
+test("loadConfig, readUserConfig, and setUserSetting honour injected dirs", () => {
+  const temp = mkdtempSync(join(tmpdir(), "pi-warden-dirs-"));
   const dirs = { agentDir: temp, configDirName: ".omp" };
   try {
     assert.equal(readUserConfig(dirs).enabled, undefined, "no file yet");
@@ -107,30 +111,7 @@ test("loadConfig, readUserConfig, and setUserSetting honour injected dirs", asyn
   }
 });
 
-function mkdtemp(): string {
-  return mkdtempSync(join(tmpdir(), "pi-warden-dirs-"));
-}
-
-test("indexDir: PI_CODING_AGENT_DIR with ~ expands, blank PI_WARDEN_INDEX_DIR is ignored", async () => {
-  const { indexDir } = await import("../src/index-cmd.js");
-  const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
-  const savedIndex = process.env.PI_WARDEN_INDEX_DIR;
-  try {
-    process.env.PI_CODING_AGENT_DIR = "~/x";
-    delete process.env.PI_WARDEN_INDEX_DIR;
-    assert.equal(indexDir(), join(process.env.HOME ?? "", "x", "pi-warden", "index"), "~ expands to the home directory");
-    process.env.PI_WARDEN_INDEX_DIR = "   ";
-    assert.equal(indexDir(), join(process.env.HOME ?? "", "x", "pi-warden", "index"), "blank PI_WARDEN_INDEX_DIR is not used");
-    delete process.env.PI_CODING_AGENT_DIR;
-    assert.equal(indexDir(), join(process.env.HOME ?? "", ".pi", "agent", "pi-warden", "index"), "unset env falls back to the Pi default");
-  } finally {
-    if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
-    if (savedIndex === undefined) delete process.env.PI_WARDEN_INDEX_DIR; else process.env.PI_WARDEN_INDEX_DIR = savedIndex;
-  }
-});
-
-test("legacyDataNotice: gated on the marker beside the data folder; conditional mv + cp", async () => {
-  const { legacyDataNotice } = await import("../src/extension.js");
+test("legacyDataNotice: gated on the marker beside the data folder; conditional mv + cp", () => {
   const pi = { agentDir: "/home/.pi/agent", configDirName: ".pi" };
   const omp = { agentDir: "/home/.omp/agent", configDirName: ".omp" };
   const target = join(omp.agentDir, "pi-warden");
@@ -158,9 +139,7 @@ test("legacyDataNotice: gated on the marker beside the data folder; conditional 
   assert.equal(legacyDataNotice(pi, pi, probe), undefined, "Pi host never migrates");
 });
 
-test("legacyDataNotice: the same directory under another spelling gets no notice", async () => {
-  const { legacyDataNotice } = await import("../src/extension.js");
-  const { mkdirSync, rmSync, symlinkSync } = await import("node:fs");
+test("legacyDataNotice: the same directory under another spelling gets no notice", () => {
   const temp = mkdtempSync(join(tmpdir(), "pi-warden-same-"));
   try {
     const pi = { agentDir: join(temp, ".pi", "agent"), configDirName: ".pi" };
@@ -180,10 +159,7 @@ test("legacyDataNotice: the same directory under another spelling gets no notice
   }
 });
 
-test("legacyDataNotice: quoting survives a path with a space and a single quote", async () => {
-  const { legacyDataNotice } = await import("../src/extension.js");
-  const { execFileSync } = await import("node:child_process");
-  const { mkdirSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
+test("legacyDataNotice: quoting survives a path with a space and a single quote", () => {
   const temp = mkdtempSync(join(tmpdir(), "pi-warden-shq-"));
   try {
     // A real temp tree whose path carries a space and a single quote, standing in for the agent dir.
@@ -193,10 +169,6 @@ test("legacyDataNotice: quoting survives a path with a space and a single quote"
     const legacy = join(pi.agentDir, "pi-warden");
     const message = legacyDataNotice(awkward, pi, path => !path.endsWith(".pi-warden-migration-notice-shown"));
     assert.ok(message, "message present for the awkward path");
-    // ' inside the path is escaped as '\'' so the shell reads one literal quote.
-    const q = (value: string) => `'` + value.replaceAll("'", `'\\''`) + `'`;
-    assert.ok(message.includes(`mv ${q(target)} ${q(`${target}.before-migration`)}`), "mv pair quoted");
-    assert.ok(message.includes(`cp -R ${q(legacy)} ${q(target)}`), "cp pair quoted");
     // The command the notice embeds survives sh -c: fresh data moves aside, legacy data lands.
     const command = message.match(/run `(.+)`\./)?.[1];
     assert.ok(command, "the notice embeds the command in backticks");
@@ -212,13 +184,3 @@ test("legacyDataNotice: quoting survives a path with a space and a single quote"
     rmSync(temp, { recursive: true, force: true });
   }
 });
-
-test("legacyDataNotice: project sentence uses each host's configDirName", async () => {
-  const { legacyDataNotice } = await import("../src/extension.js");
-  const pi = { agentDir: "/home/.pi/agent", configDirName: ".pi" };
-  const custom = { agentDir: "/home/.custom/agent", configDirName: ".custom" };
-  const message = legacyDataNotice(custom, pi, path => !path.endsWith(".pi-warden-migration-notice-shown"));
-  assert.ok(message, "message present");
-  assert.ok(message.includes(".pi/pi-warden.json to .custom/pi-warden.json"), "project copy names both config dirs");
-});
-

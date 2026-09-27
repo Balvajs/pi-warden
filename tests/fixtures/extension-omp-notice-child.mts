@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-// Stub the Pi peer: the specifier resolves to this module through the hook below.
-const { register } = await import("node:module");
-import { tmpdir } from "node:os";
-const hookDir = mkdtempSync(join(tmpdir(), "pi-warden-hooks-"));
+import { register } from "node:module";
+// The hook lives under OMP_DIR (a temp dir the parent test removes), so a failed run
+// leaves no orphan in the shared tmpdir.
+const hookDir = mkdtempSync(join(dirname(process.env.OMP_DIR!), "pi-warden-hooks-"));
 const stubPath = join(hookDir, "stub.mjs");
 const hooksPath = join(hookDir, "hooks.mjs");
 writeFileSync(stubPath, [
@@ -67,7 +67,7 @@ wardenExtension(first.host);
 const sessionStart = first.handlers.get("session_start");
 const ctx = {
   hasUI: true,
-  cwd: process.env.WORK_DIR ?? process.env.HOME + "/work",
+  cwd: process.env.WORK_DIR,
   sessionManager: { getSessionId: () => "s1" },
   isProjectTrusted: () => true,
   ui: {

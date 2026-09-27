@@ -50,7 +50,7 @@ export interface IndexFile {
 
 /* ─── Path resolution ───────────────────────────────────────────────── */
 
-/** The index directory: `PI_WARDEN_INDEX_DIR` wins, then `PI_CODING_AGENT_DIR`, then the host directories. A `~` or `~/` prefix expands to the home directory, as the base version did. */
+/** The index directory: `PI_WARDEN_INDEX_DIR` wins, then `PI_CODING_AGENT_DIR`, then the host directories. A `~` or `~/` prefix expands to the home directory. */
 export function indexDir(env: NodeJS.ProcessEnv = process.env, dirs: HostDirs = defaultHostDirs(env)): string {
   const configured = env.PI_WARDEN_INDEX_DIR?.trim() || env.PI_CODING_AGENT_DIR?.trim();
   const base = configured ? expandHome(configured) : dirs.agentDir;

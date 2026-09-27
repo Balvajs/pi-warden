@@ -148,9 +148,7 @@ function watchAsyncWork(ctx: unknown, handler: Handler, isCurrent: () => boolean
       setTimeout(check, 500).unref();
       return;
     }
-    setImmediate(() => {
-      if (isCurrent()) settle(handler, ctx);
-    });
+    settle(handler, ctx);
   };
   setTimeout(check, delayMs).unref();
 }
