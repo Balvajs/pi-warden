@@ -1,8 +1,9 @@
 /**
- * The library entry must import without the optional Pi peer installed. A child process loads
- * src/index.ts through a resolve hook that makes `@earendil-works/pi-coding-agent` unresolvable
- * (the peer is type-only in library modules) and calls `defaultConfig()` plus the path functions.
- * Type-only imports are erased by tsx, so only a real runtime import would fail here.
+ * The library entry must import without the optional Pi peers installed. A child process loads
+ * src/index.ts through a resolve hook that makes `@earendil-works/pi-coding-agent` and
+ * `@earendil-works/pi-tui` unresolvable (both peers are type-only in library modules) and calls
+ * `defaultConfig()` plus the path functions. Type-only imports are erased by tsx, so only a real
+ * runtime import would fail here.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

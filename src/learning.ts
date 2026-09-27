@@ -7,6 +7,7 @@ import { dirname, join } from "path";
 import type { DatabaseSync } from "node:sqlite";
 import type { HostDirs } from "./host-dirs.js";
 import { defaultHostDirs } from "./host-dirs.js";
+import { userConfigPath } from "./config.js";
 import { redact } from "./redact.js";
 import type { CallScores } from "./holds.js";
 
@@ -48,40 +49,38 @@ const NOOP_DB = {
 } as unknown as DatabaseSync;
 
 /** Open one connection; a failure is remembered per path so later calls neither warn again nor retry forever. */
-function openDb(dbPath: string): Promise<DatabaseSync> {
-  return (async () => {
-    let opened: DatabaseSync | undefined;
-    try {
-      // Static import cannot work: node:sqlite is flagged experimental and loads lazily so a missing
-      // or broken build of it disables learning features instead of failing the whole process.
-      const sqlite = await import("node:sqlite").catch(err => ({ importFailed: err as unknown }));
-      if ("importFailed" in sqlite) {
-        sqliteAvailable = false;
-        console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", sqlite.importFailed);
-        return NOOP_DB;
-      }
-      const { DatabaseSync } = sqlite;
-      sqliteAvailable = true;
-      // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
-      mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
-      opened = new DatabaseSync(dbPath);
-      opened.exec("PRAGMA journal_mode = WAL");
-      opened.exec("PRAGMA busy_timeout = 10000");
-      return opened;
-    } catch (err) {
-      // Import failures are handled above; this is a path open or PRAGMA failure for this path only.
-      // Close the half-opened handle and leave the resolved NOOP promise cached: one warning,
-      // and later calls neither reopen nor retry an unusable file.
-      try { opened?.close(); } catch { /* already closed */ }
-      console.warn(`pi-warden: could not open ${dbPath}:`, err);
+async function openDb(dbPath: string): Promise<DatabaseSync> {
+  let opened: DatabaseSync | undefined;
+  try {
+    // Static import cannot work: node:sqlite is flagged experimental and loads lazily so a missing
+    // or broken build of it disables learning features instead of failing the whole process.
+    const sqlite = await import("node:sqlite").catch(err => ({ importFailed: err as unknown }));
+    if ("importFailed" in sqlite) {
+      sqliteAvailable = false;
+      console.warn("pi-warden: node:sqlite unavailable, learning features disabled:", sqlite.importFailed);
       return NOOP_DB;
     }
-  })();
+    const { DatabaseSync } = sqlite;
+    sqliteAvailable = true;
+    // DatabaseSync does not create parent directories; on a fresh machine the folder may not exist yet.
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
+    opened = new DatabaseSync(dbPath);
+    opened.exec("PRAGMA journal_mode = WAL");
+    opened.exec("PRAGMA busy_timeout = 10000");
+    return opened;
+  } catch (err) {
+    // Import failures are handled above; this is a path open or PRAGMA failure for this path only.
+    // Close the half-opened handle and leave the resolved NOOP promise cached: one warning,
+    // and later calls neither reopen nor retry an unusable file.
+    try { opened?.close(); } catch { /* already closed */ }
+    console.warn(`pi-warden: could not open ${dbPath}:`, err);
+    return NOOP_DB;
+  }
 }
 
 /** One connection per resolved path; concurrent first calls share one open. */
 async function getDb(dirs: HostDirs = defaultHostDirs()): Promise<DatabaseSync> {
-  const dbPath = process.env.PI_WARDEN_DB ?? join(dirs.agentDir, "pi-warden", "holds.db");
+  const dbPath = process.env.PI_WARDEN_DB ?? join(dirname(userConfigPath(dirs)), "holds.db");
   if (sqliteAvailable === false) return NOOP_DB;
   let opening = dbs.get(dbPath);
   if (!opening) dbs.set(dbPath, opening = openDb(dbPath));

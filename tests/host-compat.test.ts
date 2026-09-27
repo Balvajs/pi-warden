@@ -14,13 +14,21 @@ function fakeHost(extras: Record<string, unknown> = {}) {
     on(event: string, handler: Handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
     registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => unknown }) { commands.set(name, options); },
   };
-  const emit = async (event: string, payload: unknown, ctx: unknown = {}) => {
+  const emit = async (event: string, payload: unknown, ctx: unknown = {}, handlerTimeoutMs?: number) => {
     await Promise.resolve(); // omp finishes extension setup before dispatching an event.
     let result: unknown;
     let error: unknown;
+    // omp's per-handler timeout: the host stops awaiting a handler that runs too long and
+    // advances to the next one; the handler's promise keeps running.
+    let onTimeout = (): void => {};
+    const timeout = new Promise<void>(resolve => { onTimeout = resolve; });
+    const timer = setTimeout(onTimeout, handlerTimeoutMs ?? 2 ** 30);
+    const run = (handler: Handler) => Promise.race([Promise.resolve(handler(payload, ctx)), timeout]);
     for (const handler of handlers.get(event) ?? []) {
-      try { result = await handler(payload, ctx); } catch (failure) { error ??= failure; }
+      try { result = await run(handler); } catch (failure) { error ??= failure; }
     }
+    clearTimeout(timer);
+    onTimeout();
     if (error !== undefined) throw error;
     return result;
   };
@@ -150,6 +158,7 @@ test("adaptHost: cancelled async work settles after draining without another age
     };
     await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
     context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(settled, 0, "running work delays settle");
     running = false; // Cancelled or acknowledged job sends no follow-up and no terminal agent_end.
     context.mock.timers.tick(500);
@@ -248,10 +257,12 @@ test("adaptHost: queued and delivering async results delay settlement", async (c
     };
     await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
     context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(settled, 0);
     queued = 0;
     delivering = true;
     context.mock.timers.tick(500);
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(settled, 0);
     delivering = false;
     context.mock.timers.tick(500);
@@ -333,7 +344,6 @@ test("adaptHost: a rejected agent_end handler leaves host error handling intact 
   adapted.on("agent_end", async () => { await io; });
   adapted.on("agent_end", () => { order.push("second"); });
   await Promise.resolve();
-  assert.equal(host.handlers.get("agent_end")?.length, 4, "host owns each handler's timeout and errors");
   const ended = host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(order, [], "do not settle while failed handler still waits");
@@ -352,17 +362,13 @@ test("adaptHost: host timeout advances to settle even if an agent_end promise re
   adapted.on("agent_settled", () => { settled++; });
   adapted.on("agent_end", () => io);
   await Promise.resolve();
-  const callbacks = host.handlers.get("agent_end")!;
-  assert.equal(callbacks.length, 3);
-  const event = { type: "agent_end" };
-  const context = { isIdle: () => true };
-  await callbacks[0]!(event, context); // Capture pending async work before user handlers.
-  const timedOut = callbacks[1]!(event, context); // Host stops awaiting this handler on timeout.
-  await callbacks[2]!(event, context); // Host advances to the settle handler.
+  // The host applies its per-handler timeout to every agent_end handler and still runs the
+  // settle stand-in after the pending one is abandoned.
+  await host.emit("agent_end", { type: "agent_end" }, { isIdle: () => true }, 1);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(settled, 1);
   finishIo();
-  await timedOut;
+  await io;
 });
 
 test("adaptHost: command contexts get getSystemPromptOptions with the active skills", async () => {

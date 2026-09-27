@@ -166,7 +166,8 @@ export function openTracePanel(ui: PanelUi, trace: Trace, options: { width?: str
   }, {
     overlay: true,
     overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
-    onHandle: (handle: OverlayFocusHandle) => { unfocus = unfocusOrClose(handle, () => close()); },
+    // A handle without `unfocus` belongs to a host whose overlays always capture input; close instead.
+    onHandle: (handle: { unfocus?(): void }) => { unfocus = typeof handle.unfocus === "function" ? () => handle.unfocus!() : () => close(); },
   });
   return { closed, close: () => close(), built: () => built };
 }
@@ -371,14 +372,8 @@ export function openConfigPanel(ui: PanelUi, config: WardenConfig, options: { wi
   }, {
     overlay: true,
     overlayOptions: { anchor: "right-center", width: options.width ?? "40%", minWidth: 44, maxHeight: "100%", nonCapturing: true },
-    onHandle: (handle: OverlayFocusHandle) => { unfocus = unfocusOrClose(handle, () => close()); },
+    // A handle without `unfocus` belongs to a host whose overlays always capture input; close instead.
+    onHandle: (handle: { unfocus?(): void }) => { unfocus = typeof handle.unfocus === "function" ? () => handle.unfocus!() : () => close(); },
   });
   return { closed, close: () => close() };
-}
-
-type OverlayFocusHandle = { unfocus?(): void };
-
-/** Hosts whose overlay handle has no `unfocus` (their overlays always capture input) close the panel instead. */
-function unfocusOrClose(handle: OverlayFocusHandle, close: () => void): () => void {
-  return typeof handle.unfocus === "function" ? () => handle.unfocus?.() : close;
 }

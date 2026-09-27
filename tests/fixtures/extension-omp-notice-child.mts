@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 // Stub the Pi peer: the specifier resolves to this module through the hook below.
 const { register } = await import("node:module");
 import { tmpdir } from "node:os";
@@ -28,15 +29,15 @@ writeFileSync(stubPath, [
   "export function isViewportTUI() { return false; }",
   "export default {};",
 ].join("\n"));
-writeFileSync(hooksPath, [
-  "export async function resolve(specifier, context, next) {",
-  "  const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', ];",
-  "  if (peers.includes(specifier)) return { url: new URL('file://' + process.env.STUB_PATH).href, shortCircuit: true };",
-  "  return next(specifier, context);",
-  "}",
-].join("\n"));
+writeFileSync(hooksPath, `import { pathToFileURL } from 'node:url';
+export async function resolve(specifier, context, next) {
+  const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui'];
+  if (peers.includes(specifier)) return { url: pathToFileURL(process.env.STUB_PATH).href, shortCircuit: true };
+  return next(specifier, context);
+}
+`);
 process.env.STUB_PATH = stubPath;
-register(new URL("file://" + hooksPath));
+register(pathToFileURL(hooksPath));
 const { default: wardenExtension } = await import(process.env.EXT_PATH!);
 
 const ompDir = process.env.OMP_DIR;
@@ -81,8 +82,12 @@ assert.equal(notices.length, 1, "first interactive session shows the notice");
 // opened (initSchema) is under ompDir, and piDir gained no holds.db of its own.
 assert.ok(existsSync(join(target, "holds.db")), "initSchema wrote the database under the omp target");
 assert.ok(!existsSync(join(piDir, "pi-warden", "holds.db")), "the Pi default gained no database");
-assert.ok(notices[0].text.includes(`{ [ ! -e ${target} ] || mv ${target} ${target}.before-migration; } && cp -R ${join(process.env.HOME + "/.pi/agent", "pi-warden")} ${target}`), "exact conditional mv + cp command");
-assert.ok(notices[0].text.includes(process.env.HOME + "/.pi/agent/pi-warden"), "names the legacy folder");
+const q = (value: string) => `'` + value.replaceAll("'", `'\\''`) + `'`;
+// The notice names the directories in symlink-free form (macOS temp dirs resolve to /private/var).
+const shownTarget = join(realpathSync(ompDir), "pi-warden");
+const shownLegacy = join(realpathSync(piDir), "pi-warden");
+assert.ok(notices[0].text.includes(`{ [ ! -e ${q(shownTarget)} ] || mv ${q(shownTarget)} ${q(`${shownTarget}.before-migration`)}; } && cp -R ${q(shownLegacy)} ${q(shownTarget)}`), "exact conditional mv + cp command with quoted paths");
+assert.ok(notices[0].text.includes(shownLegacy), "names the legacy folder");
 assert.ok(existsSync(join(ompDir, ".pi-warden-migration-notice-shown")), "marker written under the omp target");
 
 // Second interactive session: silent.
@@ -91,7 +96,7 @@ wardenExtension(second.host);
 await second.handlers.get("session_start")({}, ctx);
 assert.equal(notices.length, 1, "second session is silent");
 
-// Headless session with no marker anywhere (fresh target dir): no notice, no marker.
+// Headless session after the marker is removed: no notice, no marker.
 const third = makeHost();
 wardenExtension(third.host);
 rmSync(join(ompDir, ".pi-warden-migration-notice-shown"));

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
@@ -22,7 +22,7 @@ import type { SteerKind, SteerSubject } from "./adaptive.js";
 import type { ToolCallRef } from "./action-guard.js";
 import { ArmingTracker, unparseableArmingRules } from "./arming.js";
 import * as configModule from "./config.js";
-import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, PACKAGE_NAME, parseConfigValue, projectConfigPath, readUserConfig, setNestedValue, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
+import { applyUserOverrides, defaultConfig, getNestedValue, isMode, loadConfig, PACKAGE_NAME, parseConfigValue, PROJECT_CONFIG_FILE, projectConfigPath, readUserConfig, setNestedValue, setUserSetting, userConfigPath, writeUserConfig } from "./config.js";
 import type { WardenConfig, WardenMode } from "./config.js";
 import { classifyToolResult, doneNudge, emptyEvidence, evaluateDone, finalAssistantText, formatDone, isVisualCheck, needsDoneCheck, recordOutcome as recordDoneOutcome, recordUi } from "./done.js";
 import type { RunEvidence } from "./done.js";
@@ -328,24 +328,43 @@ export function _testSetIndexRunning(running: boolean, paths: string[] = []): vo
 
 const MIGRATION_MARKER = ".pi-warden-migration-notice-shown";
 
+/** Single-quote a path for /bin/sh; an embedded quote ends the string, escapes itself, and reopens. */
+function shellQuote(value: string): string {
+  return `'` + value.replaceAll("'", `'\\''`) + `'`;
+}
+
+/** The absolute, symlink-free, on-disk-case form of a directory; a missing directory falls back to its absolute path. */
+function canonicalDirectory(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return pathResolve(path);
+  }
+}
+
 /**
  * The one-time migration message for a host whose agent directory is not Pi's default, when data
  * still lives only under the default and this host has not shown the notice yet: undefined
- * otherwise. Pure; the caller checks the filesystem. The command moves the fresh data this host may
- * have created aside (non-destructive, and works when the target folder does not exist) and copies
- * the legacy data whole in its place.
+ * otherwise. The caller checks the filesystem for data and the marker. The directories are compared
+ * in absolute, symlink-free form: the same directory under another spelling (trailing slash, `.`
+ * segment, symlink) gets no notice, because the command would move the only copy aside. The command
+ * moves the fresh data this host may have created aside (non-destructive, and works when the target
+ * folder does not exist) and copies the legacy data whole in its place.
  */
 export function legacyDataNotice(
   dirs: HostDirs,
   piDefault: HostDirs,
   exists: (path: string) => boolean,
 ): string | undefined {
-  if (dirs.agentDir === piDefault.agentDir) return undefined;
-  const legacy = join(piDefault.agentDir, PACKAGE_NAME);
+  const agentDir = canonicalDirectory(dirs.agentDir);
+  const piAgentDir = canonicalDirectory(piDefault.agentDir);
+  if (agentDir === piAgentDir) return undefined;
+  const legacy = join(piAgentDir, PACKAGE_NAME);
   if (!exists(legacy)) return undefined;
-  const target = join(dirs.agentDir, PACKAGE_NAME);
-  if (exists(join(dirs.agentDir, MIGRATION_MARKER))) return undefined;
-  return `pi-warden now keeps its data in ${target}. Your earlier config and learning data are in ${legacy}. To keep them, close all Pi and oh-my-pi sessions, then run \`{ [ ! -e ${target} ] || mv ${target} ${target}.before-migration; } && cp -R ${legacy} ${target}\`. Also copy each project's .pi/pi-warden.json to .omp/pi-warden.json and keep the original.`;
+  const target = join(agentDir, PACKAGE_NAME);
+  if (exists(join(agentDir, MIGRATION_MARKER))) return undefined;
+  const command = `{ [ ! -e ${shellQuote(target)} ] || mv ${shellQuote(target)} ${shellQuote(`${target}.before-migration`)}; } && cp -R ${shellQuote(legacy)} ${shellQuote(target)}`;
+  return `pi-warden now keeps its data in ${target}. Your earlier config and learning data are in ${legacy}. To keep them, close all Pi and oh-my-pi sessions, then run \`${command}\`. Also copy each project's ${join(piDefault.configDirName, PROJECT_CONFIG_FILE)} to ${join(dirs.configDirName, PROJECT_CONFIG_FILE)} and keep the original.`;
 }
 
 export default function wardenExtension(host: ExtensionAPI): void {

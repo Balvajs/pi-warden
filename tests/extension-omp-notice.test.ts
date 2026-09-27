@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,13 +20,12 @@ const root = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const child = new URL("./fixtures/extension-omp-notice-child.mts", import.meta.url).pathname;
 
 test("extension on an omp-like host: notice once, marker written, headless silent", async () => {
-  const temp = mkdtemp3();
+  const temp = mkdtempSync(join(tmpdir(), "pi-warden-extomp-"));
   try {
     // The stub's getAgentDir() returns OMP_DIR (the host dirs). defaultHostDirs() resolves the Pi
-    // default from $HOME/.pi/agent, so the legacy data lives under the fake HOME.
+    // default from $HOME/.pi/agent, so the legacy data lives under the fake HOME. The fixture
+    // creates the pi-warden subfolders and the omp dir itself; only `work` is needed here.
     const home = join(temp, "home");
-    mkdirSync(join(home, ".pi", "agent", "pi-warden"), { recursive: true });
-    mkdirSync(join(temp, "omp"), { recursive: true });
     mkdirSync(join(temp, "work"), { recursive: true });
     const { stdout } = await run(process.execPath, ["--import", "tsx", child], {
       cwd: root,
@@ -36,6 +35,10 @@ test("extension on an omp-like host: notice once, marker written, headless silen
         PI_WARDEN_DB: undefined,
         PI_WARDEN_INDEX_DIR: undefined,
         PI_WARDEN_STEER_STATS: undefined,
+        PI_WARDEN_TRACE_DIR: undefined,
+        PI_WARDEN_HOST_PATHS: undefined,
+        PI_WARDEN_ENABLED: undefined,
+        PI_WARDEN_MODE: undefined,
         EXT_PATH: join(root, "src", "extension.ts"),
         OMP_DIR: join(temp, "omp"),
         WORK_DIR: join(temp, "work"),
@@ -48,7 +51,3 @@ test("extension on an omp-like host: notice once, marker written, headless silen
     rmSync(temp, { recursive: true, force: true });
   }
 });
-
-function mkdtemp3(): string {
-  return mkdtempSync(join(tmpdir(), "pi-warden-extomp-"));
-}

@@ -3,7 +3,7 @@
  * result under an injected `dirs` instead of the host's agent directory.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { join } from "node:path";
@@ -135,12 +135,16 @@ test("legacyDataNotice: gated on the marker beside the data folder; conditional 
   const omp = { agentDir: "/home/.omp/agent", configDirName: ".omp" };
   const target = join(omp.agentDir, "pi-warden");
   const legacy = join(pi.agentDir, "pi-warden");
+  const q = (value: string) => `'` + value.replaceAll("'", `'\\''`) + `'`;
   const exists = new Set<string>([legacy, join(target, "holds.db")]);
   const probe = (p: string) => exists.has(p);
   const message = legacyDataNotice(omp, pi, probe);
   assert.ok(message, "legacy present, marker absent → message");
-  // Command is conditional on the target existing and moves it aside non-destructively.
-  assert.ok(message.includes(`{ [ ! -e ${target} ] || mv ${target} ${target}.before-migration; } && cp -R ${legacy} ${target}`), "exact conditional mv + cp command");
+  // Command is conditional on the target existing, moves it aside non-destructively, and quotes every path.
+  assert.ok(
+    message.includes(`{ [ ! -e ${q(target)} ] || mv ${q(target)} ${q(`${target}.before-migration`)}; } && cp -R ${q(legacy)} ${q(target)}`),
+    "exact conditional mv + cp command with quoted paths",
+  );
   assert.ok(message.includes("close all Pi and oh-my-pi sessions"), "keeps the sessions-first warning");
   assert.ok(message.includes(".pi/pi-warden.json to .omp/pi-warden.json"), "names the project-file copy");
   // Marker beside the data folder → silent.
@@ -152,5 +156,69 @@ test("legacyDataNotice: gated on the marker beside the data folder; conditional 
   // Pi host → silent (dirs equal the default), whatever exists.
   exists.add(legacy);
   assert.equal(legacyDataNotice(pi, pi, probe), undefined, "Pi host never migrates");
+});
+
+test("legacyDataNotice: the same directory under another spelling gets no notice", async () => {
+  const { legacyDataNotice } = await import("../src/extension.js");
+  const { mkdirSync, rmSync, symlinkSync } = await import("node:fs");
+  const temp = mkdtempSync(join(tmpdir(), "pi-warden-same-"));
+  try {
+    const pi = { agentDir: join(temp, ".pi", "agent"), configDirName: ".pi" };
+    mkdirSync(join(pi.agentDir, "pi-warden"), { recursive: true });
+    symlinkSync(pi.agentDir, join(temp, "linked-agent"));
+    const markerAbsent = (path: string) => !path.endsWith(".pi-warden-migration-notice-shown");
+    // The command would move the only copy aside and then fail its copy, so no spelling of Pi's own directory may trigger it.
+    // On a case-insensitive filesystem (macOS default) `.PI` names the same directory too.
+    const caseInsensitive = existsSync(join(temp, ".PI", "agent"));
+    const spellings = [`${pi.agentDir}/`, `${join(temp, ".pi")}/./agent`, join(temp, "linked-agent"), ...(caseInsensitive ? [join(temp, ".PI", "agent")] : [])];
+    for (const spelling of spellings) {
+      assert.equal(legacyDataNotice({ agentDir: spelling, configDirName: ".omp" }, pi, markerAbsent), undefined, `same directory: ${spelling}`);
+    }
+    assert.ok(legacyDataNotice({ agentDir: join(temp, ".omp", "agent"), configDirName: ".omp" }, pi, markerAbsent), "a different directory still gets the notice");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("legacyDataNotice: quoting survives a path with a space and a single quote", async () => {
+  const { legacyDataNotice } = await import("../src/extension.js");
+  const { execFileSync } = await import("node:child_process");
+  const { mkdirSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
+  const temp = mkdtempSync(join(tmpdir(), "pi-warden-shq-"));
+  try {
+    // A real temp tree whose path carries a space and a single quote, standing in for the agent dir.
+    const awkward = { agentDir: join(temp, "My Disk/it's/agent"), configDirName: ".omp" };
+    const pi = { agentDir: join(temp, "home/.pi/agent"), configDirName: ".pi" };
+    const target = join(awkward.agentDir, "pi-warden");
+    const legacy = join(pi.agentDir, "pi-warden");
+    const message = legacyDataNotice(awkward, pi, path => !path.endsWith(".pi-warden-migration-notice-shown"));
+    assert.ok(message, "message present for the awkward path");
+    // ' inside the path is escaped as '\'' so the shell reads one literal quote.
+    const q = (value: string) => `'` + value.replaceAll("'", `'\\''`) + `'`;
+    assert.ok(message.includes(`mv ${q(target)} ${q(`${target}.before-migration`)}`), "mv pair quoted");
+    assert.ok(message.includes(`cp -R ${q(legacy)} ${q(target)}`), "cp pair quoted");
+    // The command the notice embeds survives sh -c: fresh data moves aside, legacy data lands.
+    const command = message.match(/run `(.+)`\./)?.[1];
+    assert.ok(command, "the notice embeds the command in backticks");
+    mkdirSync(target, { recursive: true });
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(target, "fresh.json"), "{}");
+    writeFileSync(join(legacy, "old.json"), "{}");
+    execFileSync("sh", ["-c", command]);
+    assert.ok(existsSync(join(target, "old.json")), "legacy file copied into the target");
+    assert.ok(existsSync(join(`${target}.before-migration`, "fresh.json")), "fresh data moved aside");
+    assert.ok(!existsSync(join(target, "fresh.json")), "fresh file no longer in the target");
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("legacyDataNotice: project sentence uses each host's configDirName", async () => {
+  const { legacyDataNotice } = await import("../src/extension.js");
+  const pi = { agentDir: "/home/.pi/agent", configDirName: ".pi" };
+  const custom = { agentDir: "/home/.custom/agent", configDirName: ".custom" };
+  const message = legacyDataNotice(custom, pi, path => !path.endsWith(".pi-warden-migration-notice-shown"));
+  assert.ok(message, "message present");
+  assert.ok(message.includes(".pi/pi-warden.json to .custom/pi-warden.json"), "project copy names both config dirs");
 });
 

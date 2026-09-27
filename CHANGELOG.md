@@ -16,7 +16,7 @@ How to keep this current: add the entry in the same pull request as the change, 
 
 ### Docs
 
-- `docs/configuration.md`, `docs/data-handling.md`, `docs/commands.md`, and `docs/faq.md` say that paths follow the host. `docs/configuration.md` and `docs/data-handling.md` add a one-time migration note for existing oh-my-pi users: close all Pi and oh-my-pi sessions, then run { [ ! -e ~/.omp/agent/pi-warden ] || mv ~/.omp/agent/pi-warden ~/.omp/agent/pi-warden.before-migration; } && cp -R ~/.pi/agent/pi-warden ~/.omp/agent/pi-warden and copy each project's `.pi/pi-warden.json` to `.omp/pi-warden.json` (keep the original). oh-my-pi shows this notice once per machine.
+- `docs/configuration.md`, `docs/data-handling.md`, `docs/commands.md`, and `docs/faq.md` say that paths follow the host. `docs/configuration.md` and `docs/data-handling.md` add a one-time migration note for existing oh-my-pi users: close all Pi and oh-my-pi sessions, then run `{ [ ! -e "$HOME/.omp/agent/pi-warden" ] || mv "$HOME/.omp/agent/pi-warden" "$HOME/.omp/agent/pi-warden.before-migration"; } && cp -R "$HOME/.pi/agent/pi-warden" "$HOME/.omp/agent/pi-warden"` and copy each project's `.pi/pi-warden.json` to `.omp/pi-warden.json` (keep the original). oh-my-pi shows this notice once per machine.
 
 ## 0.71.0
 

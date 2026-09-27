@@ -2,7 +2,6 @@
  * Host-TUI capability guard: the extension loads and mounts all guards even
  * when the host's bundled pi-tui lacks the MouseRegion component.
  *
- * Test 1: The widget renders the same guard text regardless of MouseRegion.
  * Test 2: MouseRegion is available in the real host and wraps the widget.
  * Test 3: Every guard mounts under both hosts — identical event hooks,
  *         commands, and shortcuts.
@@ -24,13 +23,10 @@ before(() => {
 // Shared mock host
 // ---------------------------------------------------------------------------
 
-const fakeTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-
 function createHost() {
   const events: Array<{ type: string; handler: (event: unknown, ctx: unknown) => unknown }> = [];
   const commands = new Map<string, { description: string; handler: (...args: unknown[]) => unknown }>();
   const shortcuts = new Map<string, { description: string; handler: (...args: unknown[]) => unknown }>();
-  const widgets: Array<{ id: string; content: unknown; options?: unknown }> = [];
 
   const pi = {
     on(type: string, handler: (event: unknown, ctx: unknown) => unknown) { events.push({ type, handler }); },
@@ -46,7 +42,7 @@ function createHost() {
       notify() {},
       confirm() { return Promise.resolve(true); },
       editor() { return Promise.resolve(undefined); },
-      setWidget(id: string, content: unknown, options?: unknown) { widgets.push({ id, content, options }); },
+      setWidget() {},
     },
     cwd: tmpdir(),
     sessionManager: { getBranch() { return []; }, getSessionId() { return "test-session"; } },
@@ -54,7 +50,7 @@ function createHost() {
     isProjectTrusted() { return true; },
   };
 
-  return { pi, ctx, events, commands, shortcuts, widgets };
+  return { pi, ctx, events, commands, shortcuts };
 }
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,17 @@ type SystemPromptOptions = { skills: PiSkill[]; appendSystemPrompt?: string };
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type SystemPrompt = string | string[];
 
+/** Bind-through view: overrides win, functions bind to the target so `this` keeps working. */
+function overlay<T extends object>(target: T, overrides: Record<PropertyKey, unknown>): T {
+  return new Proxy(target, {
+    get(target, property) {
+      if (Object.hasOwn(overrides, property)) return overrides[property];
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 export function adaptHost(pi: ExtensionAPI): ExtensionAPI {
   const session = (pi as unknown as { pi?: { getActiveSkills?: () => readonly HostSkill[] } }).pi;
   const getActiveSkills = session?.getActiveSkills;
@@ -85,14 +96,7 @@ export function adaptHost(pi: ExtensionAPI): ExtensionAPI {
   const registerCommand: ExtensionAPI["registerCommand"] = (name, options) =>
     pi.registerCommand(name, { ...options, handler: (args, ctx) => options.handler(args, withSystemPromptOptions(ctx, systemPromptOptions)) });
 
-  return new Proxy(pi, {
-    get(target, property) {
-      if (property === "on") return on;
-      if (property === "registerCommand") return registerCommand;
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  return overlay(pi, { on, registerCommand });
 }
 
 function toPiSkill(skill: HostSkill): PiSkill {
@@ -166,11 +170,5 @@ function isIdle(ctx: unknown): boolean {
 
 function withSystemPromptOptions<T extends object>(ctx: T, options: () => SystemPromptOptions): T {
   if (typeof (ctx as { getSystemPromptOptions?: unknown }).getSystemPromptOptions === "function") return ctx;
-  return new Proxy(ctx, {
-    get(target, property) {
-      if (property === "getSystemPromptOptions") return options;
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  return overlay(ctx, { getSystemPromptOptions: options });
 }
