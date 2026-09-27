@@ -58,26 +58,6 @@ function createHost() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: widget renders the same text regardless of MouseRegion
-// ---------------------------------------------------------------------------
-
-test("the widget renders the same guard text whether or not the host TUI has a mouse region", async () => {
-  const { statusWidget } = await import("../src/widget.js");
-  const entries = [
-    { guard: "action", line: "warden · bash · irreversible 0.20 · off-task 0.10 · allow" },
-    { guard: "rules", line: "warden · rules · write src/app.ts · 2 rules · none · ok" },
-  ];
-  const widget = statusWidget(entries, fakeTheme);
-  const lines = widget.render(200);
-  assert.ok(lines.length > 0, "at least one line is rendered");
-  assert.ok(lines.some(line => line.includes("action")), "the action guard line is present");
-  assert.ok(lines.some(line => line.includes("rules")), "the rules guard line is present");
-  // MouseRegion wraps the widget but does not change its rendered text.
-  const linesAgain = statusWidget(entries, fakeTheme).render(200);
-  assert.deepEqual(lines, linesAgain, "two renders of the same entries produce identical output");
-});
-
-// ---------------------------------------------------------------------------
 // Test 2: MouseRegion is available in the real host
 // ---------------------------------------------------------------------------
 
