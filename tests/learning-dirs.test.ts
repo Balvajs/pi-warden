@@ -7,19 +7,18 @@ import { test } from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// The modules read PI_WARDEN_DB per call, never at load time, so a static import is safe
+// even though the tests change the variable afterwards.
+import { initSchema, recordHold, recordOutcome, queryHoldsForProject, holdStats } from "../src/learning.js";
 
 const testA = mkdtempSync(join(tmpdir(), "pi-warden-db-a-"));
 const testB = mkdtempSync(join(tmpdir(), "pi-warden-db-b-"));
 const dirsA = { agentDir: testA, configDirName: ".pi" };
 const dirsB = { agentDir: testB, configDirName: ".omp" };
 
-const savedDb = process.env.PI_WARDEN_DB;
 delete process.env.PI_WARDEN_DB;
 
-const { initSchema, recordHold, recordOutcome, queryHoldsForProject, holdStats } = await import("../src/learning.js");
-
 test.after(() => {
-  if (savedDb === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = savedDb;
   rmSync(testA, { recursive: true, force: true });
   rmSync(testB, { recursive: true, force: true });
 });
@@ -62,7 +61,6 @@ test("interleaved A→B→A: each directory sees only its own rows", async () =>
 
 test("PI_WARDEN_DB wins over injected dirs", async () => {
   const overrideDir = mkdtempSync(join(tmpdir(), "pi-warden-db-override-"));
-  const saved = process.env.PI_WARDEN_DB;
   process.env.PI_WARDEN_DB = join(overrideDir, "override.db");
   try {
     await initSchema(0, dirsA);
@@ -71,7 +69,7 @@ test("PI_WARDEN_DB wins over injected dirs", async () => {
     const rows = await queryHoldsForProject("/proj", undefined, dirsB);
     assert.equal(rows.length, 1, "both dirs resolve to the same override database");
   } finally {
-    if (saved === undefined) delete process.env.PI_WARDEN_DB; else process.env.PI_WARDEN_DB = saved;
+    delete process.env.PI_WARDEN_DB;
     rmSync(overrideDir, { recursive: true, force: true });
   }
 });

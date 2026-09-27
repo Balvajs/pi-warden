@@ -30,7 +30,6 @@ export async function resolve(specifier, context, next) {
 const child = `
 import { register } from "node:module";
 register("data:text/javascript," + encodeURIComponent(${JSON.stringify(hookSource)}));
-process.env.PI_CODING_AGENT_DIR = process.env.PI_WARDEN_TEST_AGENT_DIR;
 const index = await import("./src/index.ts");
 const config = index.defaultConfig();
 assert.equal(config.enabled, true);
@@ -46,7 +45,7 @@ test("src/index.ts imports and works with the Pi peer unresolvable", async () =>
   try {
     const { stdout } = await run(process.execPath, ["--import", "tsx", "--input-type=module", "-e", child], {
       cwd: root,
-      env: { ...process.env, PI_CODING_AGENT_DIR: undefined as unknown as string, PI_WARDEN_DB: join(temp, "holds.db"), PI_WARDEN_TEST_AGENT_DIR: temp },
+      env: { ...process.env, PI_CODING_AGENT_DIR: temp, PI_WARDEN_DB: join(temp, "holds.db") },
       encoding: "utf8",
     });
     assert.match(stdout, /NO_PI_IMPORT_OK/);

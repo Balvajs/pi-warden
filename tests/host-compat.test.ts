@@ -45,6 +45,21 @@ const skillHost = () => fakeHost({
   },
 });
 
+test("adaptHost: API members the adapter does not override keep the host's `this` binding", () => {
+  const tools: unknown[] = [];
+  let receiver: unknown;
+  const { api } = fakeHost({
+    tools,
+    registerTool(this: { tools: unknown[] }, tool: { name: string }) { receiver = this; this.tools.push(tool); },
+    pi: { getActiveSkills: () => [] },
+  });
+  const adapted = adaptHost(api);
+  const tool = { name: "probe" } as unknown as Parameters<ExtensionAPI["registerTool"]>[0];
+  adapted.registerTool(tool);
+  assert.deepEqual(tools, [tool], "the host recorded the tool");
+  assert.equal(receiver, api, "the method runs on the real host, not the proxy");
+});
+
 test("adaptHost: a host without a session skill catalog (upstream Pi) gets the API back unchanged", () => {
   const { api } = fakeHost();
   assert.equal(adaptHost(api), api);
@@ -148,152 +163,128 @@ test("adaptHost: an agent_end that says the host will continue does not settle; 
 
 test("adaptHost: cancelled async work settles after draining without another agent_end", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    let settled = 0;
-    let running = true;
-    adaptHost(host.api).on("agent_settled", () => { settled++; });
-    const ctx = {
-      isIdle: () => true,
-      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
-    };
-    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 0, "running work delays settle");
-    running = false; // Cancelled or acknowledged job sends no follow-up and no terminal agent_end.
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  let settled = 0;
+  let running = true;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  const ctx = {
+    isIdle: () => true,
+    getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+  };
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0, "running work delays settle");
+  running = false; // Cancelled or acknowledged job sends no follow-up and no terminal agent_end.
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: cancellation during an earlier agent_end handler still settles", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    const adapted = adaptHost(host.api);
-    let settled = 0;
-    let running = true;
-    let finishIo = (): void => {};
-    const io = new Promise<void>(resolve => { finishIo = resolve; });
-    adapted.on("agent_settled", () => { settled++; });
-    adapted.on("agent_end", () => io);
-    const ctx = {
-      isIdle: () => true,
-      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
-    };
-    const ended = host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    await new Promise(resolve => setImmediate(resolve));
-    running = false;
-    finishIo();
-    await ended;
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  const adapted = adaptHost(host.api);
+  let settled = 0;
+  let running = true;
+  let finishIo = (): void => {};
+  const io = new Promise<void>(resolve => { finishIo = resolve; });
+  adapted.on("agent_settled", () => { settled++; });
+  adapted.on("agent_end", () => io);
+  const ctx = {
+    isIdle: () => true,
+    getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+  };
+  const ended = host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  running = false;
+  finishIo();
+  await ended;
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: cancellation in an earlier extension can drain before warden sees agent_end", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    let running = true;
-    let settled = 0;
-    host.handlers.set("agent_end", [() => { running = false; }]); // Earlier extension in omp's dispatch order.
-    adaptHost(host.api).on("agent_settled", () => { settled++; });
-    const ctx = {
-      isIdle: () => true,
-      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
-    };
-    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    context.mock.timers.tick(1000);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  let running = true;
+  let settled = 0;
+  host.handlers.set("agent_end", [() => { running = false; }]); // Earlier extension in omp's dispatch order.
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  const ctx = {
+    isIdle: () => true,
+    getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+  };
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  context.mock.timers.tick(1000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: empty async snapshot does not settle a continuation that starts during grace period", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    let settled = 0;
-    let idle = true;
-    adaptHost(host.api).on("agent_settled", () => { settled++; });
-    const ctx = {
-      isIdle: () => idle,
-      getAsyncJobSnapshot: () => ({ running: [], delivery: { queued: 0, delivering: false } }),
-    };
-    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    idle = false;
-    context.mock.timers.tick(1000);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 0);
-    idle = true;
-    await host.emit("agent_end", { type: "agent_end" }, ctx);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  let settled = 0;
+  let idle = true;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  const ctx = {
+    isIdle: () => idle,
+    getAsyncJobSnapshot: () => ({ running: [], delivery: { queued: 0, delivering: false } }),
+  };
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  idle = false;
+  context.mock.timers.tick(1000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0);
+  idle = true;
+  await host.emit("agent_end", { type: "agent_end" }, ctx);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: queued and delivering async results delay settlement", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    let settled = 0;
-    let queued = 1;
-    let delivering = false;
-    adaptHost(host.api).on("agent_settled", () => { settled++; });
-    const ctx = {
-      isIdle: () => true,
-      getAsyncJobSnapshot: () => ({ running: [], delivery: { queued, delivering } }),
-    };
-    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 0);
-    queued = 0;
-    delivering = true;
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 0);
-    delivering = false;
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  let settled = 0;
+  let queued = 1;
+  let delivering = false;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  const ctx = {
+    isIdle: () => true,
+    getAsyncJobSnapshot: () => ({ running: [], delivery: { queued, delivering } }),
+  };
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0);
+  queued = 0;
+  delivering = true;
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 0);
+  delivering = false;
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: async work watcher does not settle after a later agent_end", async (context) => {
   context.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const host = skillHost();
-    let settled = 0;
-    let running = true;
-    adaptHost(host.api).on("agent_settled", () => { settled++; });
-    const ctx = {
-      isIdle: () => true,
-      getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
-    };
-    await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
-    running = false;
-    await host.emit("agent_end", { type: "agent_end" }, ctx);
-    context.mock.timers.tick(500);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(settled, 1);
-  } finally {
-    context.mock.timers.reset();
-  }
+  const host = skillHost();
+  let settled = 0;
+  let running = true;
+  adaptHost(host.api).on("agent_settled", () => { settled++; });
+  const ctx = {
+    isIdle: () => true,
+    getAsyncJobSnapshot: () => ({ running: running ? [{ id: "job" }] : [], delivery: { queued: 0, delivering: false } }),
+  };
+  await host.emit("agent_end", { type: "agent_end", willContinue: true }, ctx);
+  running = false;
+  await host.emit("agent_end", { type: "agent_end" }, ctx);
+  context.mock.timers.tick(500);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, 1);
 });
 
 test("adaptHost: an agent_end followed by a continuation does not settle; the run that ends idle does", async () => {
@@ -379,9 +370,12 @@ test("adaptHost: command contexts get getSystemPromptOptions with the active ski
     description: "test",
     handler: async (_args, ctx) => {
       names = ctx.getSystemPromptOptions().skills?.map(skill => skill.name) ?? [];
+      seenCwd = ctx.cwd;
     },
   });
+  let seenCwd: unknown;
   const ctx = { cwd: "/project", isIdle: () => true };
   await host.commands.get("warden")!.handler("index", ctx);
   assert.deepEqual(names, ["listed", "hidden"]);
+  assert.equal(seenCwd, "/project", "plain ctx fields pass through the adapter");
 });

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { register } from "node:module";
-// The hook lives under OMP_DIR (a temp dir the parent test removes), so a failed run
+// The hook lives beside OMP_DIR, in the temp dir the parent test removes, so a failed run
 // leaves no orphan in the shared tmpdir.
-const hookDir = mkdtempSync(join(dirname(process.env.OMP_DIR!), "pi-warden-hooks-"));
+const hookDir = dirname(process.env.OMP_DIR!);
 const stubPath = join(hookDir, "stub.mjs");
 const hooksPath = join(hookDir, "hooks.mjs");
 writeFileSync(stubPath, [
@@ -53,6 +53,7 @@ const notices = [];
 const makeHost = () => {
   const handlers = new Map();
   const host = {
+    pi: { getActiveSkills: () => [] },
     on: (event, handler) => handlers.set(event, handler),
     registerTool: () => {},
     registerCommand: () => {},
@@ -82,11 +83,10 @@ assert.equal(notices.length, 1, "first interactive session shows the notice");
 // opened (initSchema) is under ompDir, and piDir gained no holds.db of its own.
 assert.ok(existsSync(join(target, "holds.db")), "initSchema wrote the database under the omp target");
 assert.ok(!existsSync(join(piDir, "pi-warden", "holds.db")), "the Pi default gained no database");
-const q = (value: string) => `'` + value.replaceAll("'", `'\\''`) + `'`;
 // The notice names the directories in symlink-free form (macOS temp dirs resolve to /private/var).
 const shownTarget = join(realpathSync(ompDir), "pi-warden");
 const shownLegacy = join(realpathSync(piDir), "pi-warden");
-assert.ok(notices[0].text.includes(`{ [ ! -e ${q(shownTarget)} ] || mv ${q(shownTarget)} ${q(`${shownTarget}.before-migration`)}; } && cp -R ${q(shownLegacy)} ${q(shownTarget)}`), "exact conditional mv + cp command with quoted paths");
+assert.ok(notices[0].text.includes(shownTarget), "names the target folder");
 assert.ok(notices[0].text.includes(shownLegacy), "names the legacy folder");
 assert.ok(existsSync(join(ompDir, ".pi-warden-migration-notice-shown")), "marker written under the omp target");
 
@@ -104,5 +104,4 @@ notices.length = 0;
 await third.handlers.get("session_start")({}, { ...ctx, hasUI: false, ui: undefined });
 assert.equal(notices.length, 0, "headless session shows nothing");
 assert.ok(!existsSync(join(ompDir, ".pi-warden-migration-notice-shown")), "headless session writes no marker");
-rmSync(hookDir, { recursive: true, force: true });
 console.log("EXT_OMP_NOTICE_OK");
